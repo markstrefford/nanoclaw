@@ -1,9 +1,14 @@
+import fs from 'fs';
 import https from 'https';
+import os from 'os';
+import path from 'path';
 import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
+import { transcribeAudio } from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -201,9 +206,91 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      let placeholder = '[Photo]';
+      try {
+        const photo = ctx.message.photo.at(-1); // largest size
+        if (photo) {
+          const file = await ctx.api.getFile(photo.file_id);
+          if (file.file_path) {
+            const groupDir = resolveGroupFolderPath(group.folder);
+            const mediaDir = path.join(groupDir, 'media');
+            fs.mkdirSync(mediaDir, { recursive: true });
+            const filename = `photo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.jpg`;
+            const localPath = path.join(mediaDir, filename);
+            const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+            await new Promise<void>((resolve, reject) => {
+              const out = fs.createWriteStream(localPath);
+              https
+                .get(url, (res) => {
+                  if (res.statusCode !== 200) {
+                    reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+                    return;
+                  }
+                  res.pipe(out);
+                  out.on('finish', () => {
+                    out.close();
+                    resolve();
+                  });
+                })
+                .on('error', reject);
+            });
+            placeholder = `[Photo: /workspace/group/media/${filename}]`;
+            logger.info({ chatJid, filename }, 'Telegram photo saved');
+          }
+        }
+      } catch (err: any) {
+        logger.warn({ err: err.message, chatJid }, 'Failed to download Telegram photo');
+      }
+      storeNonText(ctx, placeholder);
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+    this.bot.on('message:voice', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      let placeholder = '[Voice message]';
+      try {
+        const file = await ctx.api.getFile(ctx.message.voice.file_id);
+        if (file.file_path) {
+          const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+          const oggPath = path.join(
+            os.tmpdir(),
+            `nanoclaw-tg-voice-${Date.now()}-${Math.random().toString(36).slice(2)}.ogg`,
+          );
+          await new Promise<void>((resolve, reject) => {
+            const out = fs.createWriteStream(oggPath);
+            https
+              .get(url, (res) => {
+                if (res.statusCode !== 200) {
+                  reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+                  return;
+                }
+                res.pipe(out);
+                out.on('finish', () => {
+                  out.close();
+                  resolve();
+                });
+              })
+              .on('error', reject);
+          });
+          try {
+            const transcript = await transcribeAudio(oggPath);
+            if (transcript) placeholder = `[Voice: ${transcript}]`;
+          } finally {
+            try { fs.unlinkSync(oggPath); } catch { /* ignore */ }
+          }
+        }
+      } catch (err: any) {
+        logger.warn({ err: err.message, chatJid }, 'Failed to transcribe voice message');
+      }
+      storeNonText(ctx, placeholder);
+    });
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
