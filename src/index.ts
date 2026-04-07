@@ -4,10 +4,12 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  MAX_SESSION_SIZE_BYTES,
   POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
@@ -294,7 +296,35 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Auto-rotate bloated sessions to prevent context replay cost
+  if (sessionId) {
+    const sessionFile = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+      'projects',
+      '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      const stat = fs.statSync(sessionFile);
+      if (stat.size > MAX_SESSION_SIZE_BYTES) {
+        logger.warn(
+          { group: group.name, sessionId, sizeBytes: stat.size, maxBytes: MAX_SESSION_SIZE_BYTES },
+          'Session file exceeds size limit, rotating to fresh session',
+        );
+        fs.renameSync(sessionFile, `${sessionFile}.rotated`);
+        delete sessions[group.folder];
+        setSession(group.folder, '');
+        sessionId = undefined;
+      }
+    } catch {
+      // Session file doesn't exist yet — that's fine
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
