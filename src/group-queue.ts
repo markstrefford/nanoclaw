@@ -62,6 +62,13 @@ export class GroupQueue {
     this.processMessagesFn = fn;
   }
 
+  getStatus(): { activeCount: number; maxConcurrent: number } {
+    return {
+      activeCount: this.activeCount,
+      maxConcurrent: MAX_CONCURRENT_CONTAINERS,
+    };
+  }
+
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) return;
 
@@ -285,7 +292,10 @@ export class GroupQueue {
       setTimeout(() => {
         if (!this.shuttingDown) {
           state.circuitOpenUntil = 0;
-          logger.info({ groupJid }, 'Circuit breaker closed, draining queued messages');
+          logger.info(
+            { groupJid },
+            'Circuit breaker closed, draining queued messages',
+          );
           this.drainGroup(groupJid);
         }
       }, CIRCUIT_BREAKER_COOLDOWN_MS);

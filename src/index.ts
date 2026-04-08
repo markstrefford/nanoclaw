@@ -11,6 +11,7 @@ import {
   IDLE_TIMEOUT,
   MAX_SESSION_SIZE_BYTES,
   POLL_INTERVAL,
+  STATS_API_PORT,
   TIMEZONE,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
@@ -49,6 +50,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { startStatsApi } from './stats-api.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -313,7 +315,12 @@ async function runAgent(
       const stat = fs.statSync(sessionFile);
       if (stat.size > MAX_SESSION_SIZE_BYTES) {
         logger.warn(
-          { group: group.name, sessionId, sizeBytes: stat.size, maxBytes: MAX_SESSION_SIZE_BYTES },
+          {
+            group: group.name,
+            sessionId,
+            sizeBytes: stat.size,
+            maxBytes: MAX_SESSION_SIZE_BYTES,
+          },
           'Session file exceeds size limit, rotating to fresh session',
         );
         fs.renameSync(sessionFile, `${sessionFile}.rotated`);
@@ -537,9 +544,17 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start stats API for dashboard integration
+  const statsServer = await startStatsApi(STATS_API_PORT, {
+    queue,
+    getRegisteredGroups: () => registeredGroups,
+    startTime: Date.now(),
+  });
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    statsServer.close();
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
