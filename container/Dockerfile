@@ -41,6 +41,11 @@ COPY agent-runner/package*.json ./
 # Install dependencies
 RUN npm install
 
+# Pre-install MCP server packages so they don't download at runtime
+RUN npx -y @gongrzhe/server-gmail-autoauth-mcp --help 2>/dev/null || true \
+    && npx -y @cocal/google-calendar-mcp --help 2>/dev/null || true \
+    && npx -y @notionhq/notion-mcp-server --help 2>/dev/null || true
+
 # Copy source code
 COPY agent-runner/ ./
 

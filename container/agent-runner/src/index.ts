@@ -805,8 +805,11 @@ async function main(): Promise<void> {
 
     try {
       // Run loop: process prompt → wait for IPC follow-up → repeat
+      // Conversation history is carried across iterations so North remembers context
+      let history: Array<{ role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string }> | undefined;
       while (true) {
-        const result = await runOpenAIAgent(prompt, systemPrompt, modelOverride2, mcpConfigs);
+        const result = await runOpenAIAgent(prompt, systemPrompt, modelOverride2, mcpConfigs, history as never);
+        history = result.history;
         writeOutput({
           status: result.error ? 'error' : 'success',
           result: result.result,

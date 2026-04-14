@@ -312,7 +312,8 @@ export async function runOpenAIAgent(
   systemPrompt: string,
   model: string,
   mcpConfigs: Record<string, McpServerConfig>,
-): Promise<{ result: string | null; error?: string }> {
+  conversationHistory?: OpenAIMessage[],
+): Promise<{ result: string | null; error?: string; history: OpenAIMessage[] }> {
   // Start MCP servers
   const mcpClients: McpClient[] = [];
   for (const [name, config] of Object.entries(mcpConfigs)) {
@@ -374,11 +375,10 @@ export async function runOpenAIAgent(
   tools.push(...validTools);
   log(`Total tools: ${tools.length} (${BUILTIN_TOOLS.length} built-in + ${mcpToolMap.size} MCP)`);
 
-  // Build initial messages
-  const messages: OpenAIMessage[] = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: prompt },
-  ];
+  // Build messages — carry forward conversation history if provided
+  const messages: OpenAIMessage[] = conversationHistory
+    ? [...conversationHistory, { role: 'user', content: prompt }]
+    : [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
 
   // Agent loop
   const MAX_ITERATIONS = 50;
@@ -394,14 +394,14 @@ export async function runOpenAIAgent(
       const errMsg = (err as Error).message;
       log(`OpenAI API error: ${errMsg}`);
       cleanup(mcpClients);
-      return { result: null, error: errMsg };
+      return { result: null, error: errMsg, history: messages };
     }
 
     const choice = response.choices?.[0];
     if (!choice) {
       log('No choices in response');
       cleanup(mcpClients);
-      return { result: null, error: 'No response from model' };
+      return { result: null, error: 'No response from model', history: messages };
     }
 
     const msg = choice.message;
@@ -456,7 +456,7 @@ export async function runOpenAIAgent(
   }
 
   cleanup(mcpClients);
-  return { result: lastResult };
+  return { result: lastResult, history: messages };
 }
 
 function cleanup(clients: McpClient[]): void {
