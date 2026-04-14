@@ -135,10 +135,7 @@ export function startStatsApi(
           });
           json(res, { since: since || 'all', bucket, buckets });
         } else if (path === '/api/stats/containers') {
-          const limit = parseInt(
-            url.searchParams.get('limit') || '20',
-            10,
-          );
+          const limit = parseInt(url.searchParams.get('limit') || '20', 10);
           const containers = getTokenUsageByContainer({
             since,
             groupFolder: group,

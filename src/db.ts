@@ -781,7 +781,8 @@ export function getTokenUsageTimeSeries(opts: {
   groupFolder?: string;
   bucket?: 'hour' | 'day';
 }): TokenUsageTimeBucket[] {
-  const bucketSize = opts.bucket === 'day' ? '%Y-%m-%dT00:00:00' : '%Y-%m-%dT%H:00:00';
+  const bucketSize =
+    opts.bucket === 'day' ? '%Y-%m-%dT00:00:00' : '%Y-%m-%dT%H:00:00';
   const conditions: string[] = [];
   const params: unknown[] = [];
   if (opts.since) {

@@ -36,6 +36,8 @@ const vossEnv = readEnvFile([
   'VOSS_API_KEY',
   'NOTION_TOKEN',
   'MOLTBOOK_API_KEY',
+  'OPENAI_MODEL',
+  'OPENAI_API_KEY',
 ]);
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -294,7 +296,12 @@ function buildContainerArgs(
     args.push('-e', `NOTION_TOKEN=${vossEnv.NOTION_TOKEN}`);
   if (vossEnv.MOLTBOOK_API_KEY)
     args.push('-e', `MOLTBOOK_API_KEY=${vossEnv.MOLTBOOK_API_KEY}`);
-  if (model) args.push('-e', `CLAUDE_MODEL=${model}`);
+  // Pass model to container. If OPENAI_MODEL is set, use it — the OpenAI runner
+  // detects non-claude- model names and calls OpenAI directly instead of the Claude SDK.
+  const effectiveModel = model || vossEnv.OPENAI_MODEL;
+  if (effectiveModel) args.push('-e', `CLAUDE_MODEL=${effectiveModel}`);
+  if (vossEnv.OPENAI_API_KEY)
+    args.push('-e', `OPENAI_API_KEY=${vossEnv.OPENAI_API_KEY}`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -343,7 +350,13 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.folder, input.isMain, input.model);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group.folder,
+    input.isMain,
+    input.model,
+  );
 
   logger.debug(
     {

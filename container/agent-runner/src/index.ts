@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { runOpenAIAgent } from './openai-runner.js';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -620,6 +621,60 @@ async function main(): Promise<void> {
     // Script says wake agent — enrich prompt with script data
     log(`Script wakeAgent=true, enriching prompt with data`);
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
+  }
+
+  // Check if we should use OpenAI runner instead of Claude SDK
+  const modelOverride2 = process.env.CLAUDE_MODEL || '';
+  const useOpenAI = modelOverride2 && !modelOverride2.startsWith('claude-');
+
+  if (useOpenAI) {
+    log(`Using OpenAI runner with model: ${modelOverride2}`);
+
+    // Build system prompt from CLAUDE.md files
+    let systemPrompt = 'You are a helpful assistant.';
+    const groupClaudeMdPath2 = '/workspace/group/CLAUDE.md';
+    if (fs.existsSync(groupClaudeMdPath2)) {
+      systemPrompt = fs.readFileSync(groupClaudeMdPath2, 'utf-8');
+    }
+    const globalClaudeMdPath2 = '/workspace/global/CLAUDE.md';
+    if (fs.existsSync(globalClaudeMdPath2)) {
+      systemPrompt = fs.readFileSync(globalClaudeMdPath2, 'utf-8') + '\n\n' + systemPrompt;
+    }
+
+    // MCP server configs — only start what's needed for this group
+    const mcpConfigs: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+      nanoclaw: {
+        command: 'node',
+        args: [mcpServerPath],
+        env: {
+          NANOCLAW_CHAT_JID: containerInput.chatJid,
+          NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+          NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+        },
+      },
+    };
+    // Only add moltbook MCP for the moltbook group (it exposes 200+ tools)
+    if (process.env.MOLTBOOK_API_KEY && containerInput.groupFolder.includes('moltbook')) {
+      mcpConfigs.moltbook = {
+        command: 'node',
+        args: ['/opt/moltbook-mcp/index.js'],
+        env: { MOLTBOOK_API_KEY: process.env.MOLTBOOK_API_KEY },
+      };
+    }
+
+    try {
+      const result = await runOpenAIAgent(prompt, systemPrompt, modelOverride2, mcpConfigs);
+      writeOutput({
+        status: result.error ? 'error' : 'success',
+        result: result.result,
+        error: result.error,
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log(`OpenAI agent error: ${errorMessage}`);
+      writeOutput({ status: 'error', result: null, error: errorMessage });
+    }
+    return;
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
