@@ -653,7 +653,45 @@ async function main(): Promise<void> {
         },
       },
     };
-    // Only add moltbook MCP for the moltbook group (it exposes 200+ tools)
+    // Add MCP servers based on group context.
+    // Moltbook has 200+ tools so only load it for its own group.
+    // Gmail, calendar, notion, voss-crm are lightweight (~10-15 tools each).
+    if (containerInput.isMain) {
+      mcpConfigs.gmail = {
+        command: 'npx',
+        args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+      };
+      mcpConfigs.calendar = {
+        command: 'npx',
+        args: ['-y', '@cocal/google-calendar-mcp'],
+        env: {
+          GOOGLE_OAUTH_CREDENTIALS: '/home/node/.gmail-mcp/gcp-oauth.keys.json',
+          GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/home/node/.config/google-calendar-mcp/tokens.json',
+        },
+      };
+      if (process.env.NOTION_TOKEN) {
+        mcpConfigs.notion = {
+          command: 'npx',
+          args: ['-y', '@notionhq/notion-mcp-server'],
+          env: {
+            OPENAPI_MCP_HEADERS: JSON.stringify({
+              Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
+              'Notion-Version': '2022-06-28',
+            }),
+          },
+        };
+      }
+      if (process.env.VOSS_API_URL) {
+        mcpConfigs['voss-crm'] = {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'voss-mcp.js')],
+          env: {
+            VOSS_API_URL: process.env.VOSS_API_URL || '',
+            VOSS_API_KEY: process.env.VOSS_API_KEY || '',
+          },
+        };
+      }
+    }
     if (process.env.MOLTBOOK_API_KEY && containerInput.groupFolder.includes('moltbook')) {
       mcpConfigs.moltbook = {
         command: 'node',
