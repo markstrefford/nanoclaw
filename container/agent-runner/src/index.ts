@@ -808,6 +808,26 @@ async function main(): Promise<void> {
       };
     }
 
+    // Load recent conversation for cross-session context
+    const convDir = '/workspace/group/conversations';
+    if (fs.existsSync(convDir)) {
+      const convFiles = fs.readdirSync(convDir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse();
+      if (convFiles.length > 0) {
+        try {
+          const lastConv = fs.readFileSync(path.join(convDir, convFiles[0]), 'utf-8');
+          // Extract just the last ~2000 chars for context (avoid bloating the prompt)
+          const tail = lastConv.length > 2000 ? '...\n' + lastConv.slice(-2000) : lastConv;
+          systemPrompt += `\n\n---\n\n## Recent conversation context\n\nHere is the tail of your most recent conversation session (${convFiles[0]}). Use this for context if Mark references something from a previous chat:\n\n${tail}`;
+          log(`Loaded recent conversation context: ${convFiles[0]} (${tail.length} chars)`);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
     try {
       // Run loop: process prompt → wait for IPC follow-up → repeat
       // Conversation history is carried across iterations so North remembers context
@@ -838,6 +858,26 @@ async function main(): Promise<void> {
 
         log(`Got follow-up message (${nextMessage.length} chars)`);
         prompt = nextMessage;
+      }
+      // Save conversation to conversations/ for cross-session memory
+      if (history && history.length > 2) {
+        try {
+          const convDir2 = '/workspace/group/conversations';
+          fs.mkdirSync(convDir2, { recursive: true });
+          const now = new Date();
+          const ts = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          const convContent = history
+            .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+            .map(m => `**${m.role}**: ${m.content || '(tool call)'}`)
+            .join('\n\n');
+          fs.writeFileSync(
+            path.join(convDir2, `${ts}-openai-session.md`),
+            `# Conversation ${now.toISOString()}\n\n${convContent}`,
+          );
+          log(`Saved conversation (${history.length} messages)`);
+        } catch {
+          // ignore
+        }
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
