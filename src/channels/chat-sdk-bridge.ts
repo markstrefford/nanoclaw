@@ -5,6 +5,9 @@
  * Used by Discord, Slack, and other Chat SDK-supported platforms.
  */
 import http from 'http';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 import {
   Chat,
@@ -19,6 +22,7 @@ import {
   type Message as ChatMessage,
 } from 'chat';
 import { log } from '../log.js';
+import { transcribeAudio } from '../transcription.js';
 import { SqliteStateAdapter } from '../state-sqlite.js';
 import { registerWebhookAdapter } from '../webhook-server.js';
 import { getAskQuestionRender } from '../db/sessions.js';
@@ -119,6 +123,35 @@ export function splitForLimit(text: string, limit: number): string[] {
   return chunks;
 }
 
+/**
+ * Write a downloaded audio buffer to a temp file and run it through the
+ * host's whisper.cpp. Returns the transcript, or null if transcription is
+ * unavailable/fails (caller falls back to keeping the audio attachment).
+ */
+async function transcribeAudioBuffer(buffer: Buffer, mimeType?: string): Promise<string | null> {
+  const ext = mimeType?.includes('ogg')
+    ? 'ogg'
+    : mimeType?.includes('mp')
+      ? 'mp3'
+      : mimeType?.includes('wav')
+        ? 'wav'
+        : 'audio';
+  const tmp = path.join(os.tmpdir(), `nanoclaw-tg-voice-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+  try {
+    fs.writeFileSync(tmp, buffer);
+    return await transcribeAudio(tmp);
+  } catch (err) {
+    log.warn('Voice transcription failed', { err });
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter {
   const { adapter } = config;
   const transformText = (t: string): string => (config.transformOutboundText ? config.transformOutboundText(t) : t);
@@ -136,6 +169,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
     const serialized = message.toJSON() as Record<string, any>;
 
     // Download attachment data before serialization loses fetchData()
+    let voiceTranscript: string | null = null;
     if (message.attachments && message.attachments.length > 0) {
       const enriched = [];
       for (const att of message.attachments) {
@@ -151,7 +185,16 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         if (att.fetchData) {
           try {
             const buffer = await att.fetchData();
-            entry.data = buffer.toString('base64');
+            // Voice/audio (Telegram maps both voice notes and audio files to
+            // type "audio") → transcribe host-side via whisper.cpp and surface
+            // the text to the agent. The raw audio bytes are useless to the
+            // model, so we drop them rather than base64-bloat the inbound DB.
+            if (att.type === 'audio' && !voiceTranscript) {
+              voiceTranscript = await transcribeAudioBuffer(buffer, att.mimeType);
+              entry.transcribed = voiceTranscript != null;
+            } else {
+              entry.data = buffer.toString('base64');
+            }
           } catch (err) {
             log.warn('Failed to download attachment', { type: att.type, err });
           }
@@ -159,6 +202,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         enriched.push(entry);
       }
       serialized.attachments = enriched;
+    }
+
+    // Surface the voice transcript as message text so the agent reads it (the
+    // formatter renders content.text). Matches v1's "[Voice: ...]" convention,
+    // which the agent personality already understands.
+    if (voiceTranscript) {
+      const existing = typeof serialized.text === 'string' ? serialized.text.trim() : '';
+      serialized.text = existing ? `${existing}\n[Voice: ${voiceTranscript}]` : `[Voice: ${voiceTranscript}]`;
     }
 
     // Extract reply context via platform-specific hook
