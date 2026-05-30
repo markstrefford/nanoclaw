@@ -217,6 +217,17 @@ function registerTelegramBot(channelType: string, envVar: string): void {
 
       const botUsernamePromise = fetchBotUsername(token);
 
+      // Poll watchdog. The @chat-adapter/telegram polling loop exits
+      // permanently if a transient network error trips its abort path, leaving
+      // the bot silent until the host restarts — observed as multi-minute (and
+      // longer) dead windows where Telegram holds undelivered updates. The
+      // adapter's own backoff caps at 30s, so a long silence means the loop has
+      // *exited*, not merely backed off. startPolling() is idempotent (a no-op
+      // while already active), so re-arming it on an interval revives a dead
+      // poller within ~60s and flushes the held backlog. Cheap insurance that
+      // survives package updates since it lives entirely on our side.
+      let pollWatchdog: ReturnType<typeof setInterval> | null = null;
+
       const wrapped: ChannelAdapter = {
         ...bridge,
         channelType,
@@ -240,7 +251,22 @@ function registerTelegramBot(channelType: string, envVar: string): void {
             ...hostConfig,
             onInbound: createPairingInterceptor(botUsernamePromise, hostConfig.onInbound, token, channelType),
           };
-          return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
+          await withRetry(() => bridge.setup(intercepted), 'bridge.setup');
+          if (!pollWatchdog) {
+            pollWatchdog = setInterval(() => {
+              telegramAdapter.startPolling().catch((err: unknown) => {
+                log.warn('Telegram poll watchdog re-arm failed', { channelType, err });
+              });
+            }, 60_000);
+            pollWatchdog.unref?.();
+          }
+        },
+        async teardown() {
+          if (pollWatchdog) {
+            clearInterval(pollWatchdog);
+            pollWatchdog = null;
+          }
+          await bridge.teardown();
         },
       };
       return wrapped;
