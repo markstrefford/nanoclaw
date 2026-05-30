@@ -39,3 +39,7 @@ groups/*
 .nanoclaw/
 
 agents-sdk-docs
+
+# Iris personal Google OAuth client (secret) — never commit
+.iris-google.json
+.iris-google.clientid

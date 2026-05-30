@@ -114,6 +114,7 @@ function createPairingInterceptor(
   botUsernamePromise: Promise<string | null>,
   hostOnInbound: ChannelSetup['onInbound'],
   token: string,
+  channelType: string,
 ): ChannelSetup['onInbound'] {
   return async (platformId, threadId, message) => {
     try {
@@ -142,7 +143,7 @@ function createPairingInterceptor(
       // code-bearing message never reaches an agent. Privilege is now a
       // property of the paired user, not the chat: upsert the user, and if
       // this instance has no owner yet, promote them to owner.
-      const existing = getMessagingGroupByPlatform('telegram', platformId);
+      const existing = getMessagingGroupByPlatform(channelType, platformId);
       if (existing) {
         updateMessagingGroup(existing.id, {
           is_group: consumed.consumed!.isGroup ? 1 : 0,
@@ -150,7 +151,7 @@ function createPairingInterceptor(
       } else {
         createMessagingGroup({
           id: `mg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          channel_type: 'telegram',
+          channel_type: channelType,
           platform_id: platformId,
           name: consumed.consumed!.name,
           is_group: consumed.consumed!.isGroup ? 1 : 0,
@@ -195,51 +196,57 @@ function createPairingInterceptor(
   };
 }
 
-registerChannelAdapter('telegram', {
-  factory: () => {
-    const env = readEnvFile(['TELEGRAM_BOT_TOKEN']);
-    if (!env.TELEGRAM_BOT_TOKEN) return null;
-    const token = env.TELEGRAM_BOT_TOKEN;
-    const telegramAdapter = createTelegramAdapter({
-      botToken: token,
-      mode: 'polling',
-    });
-    const bridge = createChatSdkBridge({
-      adapter: telegramAdapter,
-      concurrency: 'concurrent',
-      extractReplyContext,
-      supportsThreads: false,
-      transformOutboundText: sanitizeTelegramLegacyMarkdown,
-      maxTextLength: 4000,
-    });
+function registerTelegramBot(channelType: string, envVar: string): void {
+  registerChannelAdapter(channelType, {
+    factory: () => {
+      const env = readEnvFile([envVar]);
+      if (!env[envVar]) return null;
+      const token = env[envVar];
+      const telegramAdapter = createTelegramAdapter({
+        botToken: token,
+        mode: 'polling',
+      });
+      const bridge = createChatSdkBridge({
+        adapter: telegramAdapter,
+        concurrency: 'concurrent',
+        extractReplyContext,
+        supportsThreads: false,
+        transformOutboundText: sanitizeTelegramLegacyMarkdown,
+        maxTextLength: 4000,
+      });
 
-    const botUsernamePromise = fetchBotUsername(token);
+      const botUsernamePromise = fetchBotUsername(token);
 
-    const wrapped: ChannelAdapter = {
-      ...bridge,
-      resolveChannelName: async (platformId: string) => {
-        const chatId = platformId.split(':').slice(1).join(':');
-        if (!chatId) return null;
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId }),
-          });
-          const data = (await res.json()) as { ok?: boolean; result?: { title?: string } };
-          return data.ok ? (data.result?.title ?? null) : null;
-        } catch {
-          return null;
-        }
-      },
-      async setup(hostConfig: ChannelSetup) {
-        const intercepted: ChannelSetup = {
-          ...hostConfig,
-          onInbound: createPairingInterceptor(botUsernamePromise, hostConfig.onInbound, token),
-        };
-        return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
-      },
-    };
-    return wrapped;
-  },
-});
+      const wrapped: ChannelAdapter = {
+        ...bridge,
+        channelType,
+        resolveChannelName: async (platformId: string) => {
+          const chatId = platformId.split(':').slice(1).join(':');
+          if (!chatId) return null;
+          try {
+            const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ chat_id: chatId }),
+            });
+            const data = (await res.json()) as { ok?: boolean; result?: { title?: string } };
+            return data.ok ? (data.result?.title ?? null) : null;
+          } catch {
+            return null;
+          }
+        },
+        async setup(hostConfig: ChannelSetup) {
+          const intercepted: ChannelSetup = {
+            ...hostConfig,
+            onInbound: createPairingInterceptor(botUsernamePromise, hostConfig.onInbound, token, channelType),
+          };
+          return withRetry(() => bridge.setup(intercepted), 'bridge.setup');
+        },
+      };
+      return wrapped;
+    },
+  });
+}
+
+registerTelegramBot('telegram', 'TELEGRAM_BOT_TOKEN');
+registerTelegramBot('telegram_iris', 'TELEGRAM_BOT_TOKEN_IRIS');
