@@ -14,7 +14,12 @@ const envConfig = readEnvFile([
   'WHISPER_BIN',
   'WHISPER_MODEL',
   'TZ',
+  'COST_REPORT_TARGET',
+  'COST_REPORT_HOUR',
 ]);
+
+export const COST_REPORT_TARGET = process.env.COST_REPORT_TARGET || envConfig.COST_REPORT_TARGET || '';
+export const COST_REPORT_HOUR = process.env.COST_REPORT_HOUR || envConfig.COST_REPORT_HOUR || '';
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =

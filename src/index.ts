@@ -15,6 +15,7 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
+import { startCostReportSchedule } from './cost-report.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 
@@ -173,6 +174,9 @@ async function main(): Promise<void> {
   // 6. Start host sweep
   startHostSweep();
   log.info('Host sweep started');
+
+  // 6b. Start the daily token/cost report (no-op unless COST_REPORT_TARGET set).
+  startCostReportSchedule();
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();

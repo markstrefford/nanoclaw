@@ -94,9 +94,25 @@ export interface AgentQuery {
   abort(): void;
 }
 
+/**
+ * Per-turn token + cost accounting, captured from the provider SDK's result
+ * message. All counts are for the turn the result closes. `costUsd` assumes
+ * API pricing — it is notional on a subscription plan, where the token counts
+ * are the meaningful signal.
+ */
+export interface TurnUsage {
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  numTurns: number;
+}
+
 export type ProviderEvent =
   | { type: 'init'; continuation: string }
-  | { type: 'result'; text: string | null }
+  | { type: 'result'; text: string | null; usage?: TurnUsage }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   /**

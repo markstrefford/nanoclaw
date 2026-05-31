@@ -6,7 +6,7 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput, TurnUsage } from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
@@ -427,6 +427,7 @@ export class ClaudeProvider implements AgentProvider {
     });
 
     let aborted = false;
+    const providerModel = this.model;
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
@@ -441,7 +442,31 @@ export class ClaudeProvider implements AgentProvider {
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'result') {
           const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
-          yield { type: 'result', text };
+          // The SDK result carries the turn's token usage + cost. Capture it so
+          // the host can account spend per agent group — otherwise it's dropped.
+          const m = message as {
+            total_cost_usd?: number;
+            num_turns?: number;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+          };
+          let usage: TurnUsage | undefined;
+          if (m.usage || m.total_cost_usd != null) {
+            usage = {
+              model: providerModel,
+              inputTokens: m.usage?.input_tokens ?? 0,
+              outputTokens: m.usage?.output_tokens ?? 0,
+              cacheReadTokens: m.usage?.cache_read_input_tokens ?? 0,
+              cacheCreationTokens: m.usage?.cache_creation_input_tokens ?? 0,
+              costUsd: m.total_cost_usd ?? 0,
+              numTurns: m.num_turns ?? 0,
+            };
+          }
+          yield { type: 'result', text, usage };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {

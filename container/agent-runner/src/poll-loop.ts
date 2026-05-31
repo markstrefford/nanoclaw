@@ -1,6 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
+import { recordTokenUsage } from './db/token-usage.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
@@ -440,6 +441,13 @@ async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
+        if (event.usage) {
+          try {
+            recordTokenUsage(event.usage);
+          } catch (err) {
+            log(`Failed to record token usage: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         if (event.text) {
           const { hasUnwrapped } = dispatchResultText(event.text, routing);
           if (hasUnwrapped && !unwrappedNudged) {
