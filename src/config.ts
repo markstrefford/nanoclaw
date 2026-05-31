@@ -16,6 +16,8 @@ const envConfig = readEnvFile([
   'TZ',
   'COST_REPORT_TARGET',
   'COST_REPORT_HOUR',
+  'MEDIA_ARCHIVE_DIR',
+  'MEDIA_ARCHIVE_MOUNT',
 ]);
 
 export const COST_REPORT_TARGET = process.env.COST_REPORT_TARGET || envConfig.COST_REPORT_TARGET || '';
@@ -58,6 +60,18 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CO
 export const WHISPER_BIN = process.env.WHISPER_BIN || envConfig.WHISPER_BIN || 'whisper-cli';
 export const WHISPER_MODEL =
   process.env.WHISPER_MODEL || envConfig.WHISPER_MODEL || path.resolve(PROJECT_ROOT, 'data', 'models', 'ggml-base.bin');
+
+// Inbound media archive (images + voice notes) → a persistent folder, by
+// design the Obsidian vault's `raw/` so both agents see drops via the existing
+// vault mount. Feature is OFF unless MEDIA_ARCHIVE_DIR is set.
+//   MEDIA_ARCHIVE_DIR   — host path to the `raw` dir (e.g. ".../10x Mark/raw").
+//                         images/ and voicenotes/ subfolders are created under it.
+//   MEDIA_ARCHIVE_MOUNT — the same dir's path *inside the container*, relative
+//                         to /workspace (default matches the vault mount), used
+//                         to tell the agent where to Read the file.
+export const MEDIA_ARCHIVE_DIR = process.env.MEDIA_ARCHIVE_DIR || envConfig.MEDIA_ARCHIVE_DIR || '';
+export const MEDIA_ARCHIVE_MOUNT =
+  process.env.MEDIA_ARCHIVE_MOUNT || envConfig.MEDIA_ARCHIVE_MOUNT || 'extra/obsidian-vault/raw';
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -239,6 +239,15 @@ function formatReplyContext(replyTo: any): string {
   return `\n  <quoted_message from="${escapeXml(sender)}">${escapeXml(text)}</quoted_message>\n`;
 }
 
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|heic|bmp|tiff?)$/i;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isImageAttachment(a: any, name: string, localPath: string): boolean {
+  const type = String(a.type || '').toLowerCase();
+  if (type === 'image' || type === 'photo') return true;
+  return IMAGE_EXT.test(name) || IMAGE_EXT.test(localPath);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function formatAttachments(attachments: any[] | undefined): string {
   if (!Array.isArray(attachments) || attachments.length === 0) return '';
@@ -248,6 +257,11 @@ function formatAttachments(attachments: any[] | undefined): string {
     const localPath = a.localPath ? `/workspace/${a.localPath}` : '';
     const url = a.url || '';
     if (localPath) {
+      // Images are not inlined into the prompt — point the agent at the file so
+      // it views them with the Read tool (Read renders images visually).
+      if (isImageAttachment(a, name, localPath)) {
+        return `[image: ${escapeXml(name)} — use the Read tool on ${escapeXml(localPath)} to view it]`;
+      }
       return `[${type}: ${escapeXml(name)} — saved to ${escapeXml(localPath)}]`;
     }
     return url ? `[${type}: ${escapeXml(name)} (${escapeXml(url)})]` : `[${type}: ${escapeXml(name)}]`;

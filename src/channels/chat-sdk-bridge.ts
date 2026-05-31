@@ -23,6 +23,7 @@ import {
 } from 'chat';
 import { log } from '../log.js';
 import { transcribeAudio } from '../transcription.js';
+import { archiveImage, archiveVoiceNote, isImageAttachment, isMediaArchiveEnabled } from '../media-archive.js';
 import { SqliteStateAdapter } from '../state-sqlite.js';
 import { registerWebhookAdapter } from '../webhook-server.js';
 import { getAskQuestionRender } from '../db/sessions.js';
@@ -171,6 +172,8 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
     // Download attachment data before serialization loses fetchData()
     let voiceTranscript: string | null = null;
     if (message.attachments && message.attachments.length > 0) {
+      const senderName = message.author?.fullName ?? message.author?.userName ?? 'unknown';
+      const sentAt = message.metadata.dateSent;
       const enriched = [];
       for (const att of message.attachments) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -185,13 +188,37 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         if (att.fetchData) {
           try {
             const buffer = await att.fetchData();
+            const archiveMeta = {
+              sender: senderName,
+              messageId: message.id,
+              mimeType: att.mimeType,
+              source: adapter.name,
+              timestamp: sentAt,
+            };
             // Voice/audio (Telegram maps both voice notes and audio files to
             // type "audio") → transcribe host-side via whisper.cpp and surface
             // the text to the agent. The raw audio bytes are useless to the
-            // model, so we drop them rather than base64-bloat the inbound DB.
+            // model in-context, so we don't base64 them into the inbound DB —
+            // but when archiving is on we persist the audio + transcript into
+            // the vault's raw/voicenotes/ for later recall.
             if (att.type === 'audio' && !voiceTranscript) {
               voiceTranscript = await transcribeAudioBuffer(buffer, att.mimeType);
               entry.transcribed = voiceTranscript != null;
+              const archived = archiveVoiceNote(buffer, voiceTranscript, archiveMeta);
+              if (archived) {
+                entry.localPath = archived.containerPath;
+                entry.archived = true;
+              }
+            } else if (isImageAttachment(att.type, att.mimeType) && isMediaArchiveEnabled()) {
+              // Image → vault raw/images/. Reference the in-container path so
+              // the agent can Read it (no base64 bloat in the inbound DB).
+              const archived = archiveImage(buffer, archiveMeta);
+              if (archived) {
+                entry.localPath = archived.containerPath;
+                entry.archived = true;
+              } else {
+                entry.data = buffer.toString('base64');
+              }
             } else {
               entry.data = buffer.toString('base64');
             }
