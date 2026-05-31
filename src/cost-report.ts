@@ -66,22 +66,46 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
     }
     try {
       db.pragma('busy_timeout = 2000');
-      const row = db
+      // Token/turn fields are per-result increments → SUM is correct.
+      // cost_usd is NOT: the SDK reports `total_cost_usd` as a running total
+      // for the current container run, resetting to a fresh series each time
+      // the container respawns. SUMming it directly (the original bug) summed
+      // a cumulative metric and inflated the total ~10x+. Fetch the ordered
+      // series and reconstruct incremental spend below.
+      const rows = db
         .prepare(
           `SELECT
-             COALESCE(SUM(input_tokens), 0)          AS input,
-             COALESCE(SUM(output_tokens), 0)         AS output,
-             COALESCE(SUM(cache_read_tokens), 0)     AS cacheRead,
-             COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreation,
-             COALESCE(SUM(cost_usd), 0)              AS cost,
-             COALESCE(SUM(num_turns), 0)             AS turns,
-             COUNT(*)                                AS calls
+             COALESCE(input_tokens, 0)          AS input,
+             COALESCE(output_tokens, 0)         AS output,
+             COALESCE(cache_read_tokens, 0)     AS cacheRead,
+             COALESCE(cache_creation_tokens, 0) AS cacheCreation,
+             COALESCE(cost_usd, 0)              AS cost,
+             COALESCE(num_turns, 0)             AS turns
            FROM token_usage
-           WHERE ts >= ? AND ts < ?`,
+           WHERE ts >= ? AND ts < ?
+           ORDER BY ts`,
         )
-        .get(sinceIso, untilIso) as Omit<BotTotals, 'name'> | undefined;
+        .all(sinceIso, untilIso) as Array<{
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheCreation: number;
+        cost: number;
+        turns: number;
+      }>;
 
-      if (!row || row.calls === 0) continue;
+      if (rows.length === 0) continue;
+
+      // Walk the cumulative cost series: add the increment while it climbs,
+      // and treat any drop as a new container run whose starting value is real
+      // spend. (A run that straddles the window's start slightly over-counts
+      // its pre-window portion; negligible given the ~30min container ceiling.)
+      let cost = 0;
+      let prevCost: number | null = null;
+      for (const r of rows) {
+        cost += prevCost === null || r.cost < prevCost ? r.cost : r.cost - prevCost;
+        prevCost = r.cost;
+      }
 
       const acc = byGroup.get(s.group_name) ?? {
         name: s.group_name,
@@ -93,13 +117,15 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
         turns: 0,
         calls: 0,
       };
-      acc.input += row.input;
-      acc.output += row.output;
-      acc.cacheRead += row.cacheRead;
-      acc.cacheCreation += row.cacheCreation;
-      acc.cost += row.cost;
-      acc.turns += row.turns;
-      acc.calls += row.calls;
+      for (const r of rows) {
+        acc.input += r.input;
+        acc.output += r.output;
+        acc.cacheRead += r.cacheRead;
+        acc.cacheCreation += r.cacheCreation;
+        acc.turns += r.turns;
+      }
+      acc.cost += cost;
+      acc.calls += rows.length;
       byGroup.set(s.group_name, acc);
     } catch {
       // token_usage table absent on this (pre-feature) session DB — skip.
