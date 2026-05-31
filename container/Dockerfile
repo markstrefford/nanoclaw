@@ -27,6 +27,10 @@ ARG GMAIL_MCP_VERSION=1.1.11
 ARG CALENDAR_MCP_VERSION=2.6.1
 ARG CALDAV_MCP_VERSION=0.9.2
 ARG MCPVAULT_VERSION=0.11.0
+# yt-dlp: extracts transcripts/media/metadata from YouTube, Instagram, TikTok,
+# X and ~1800 other sites WebFetch can't scrape. Self-contained linux binary
+# (bundles its own Python). Release assets are immutable, so the tag pins it.
+ARG YT_DLP_VERSION=2026.03.17
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -52,6 +56,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxshmfence1 \
         ca-certificates \
         curl \
+        ffmpeg \
         git \
         tini \
         unzip \
@@ -59,6 +64,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
     && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp standalone binary (pinned, immutable release asset). Placed in
+# /usr/local/bin so the non-root `node` user can run it. TARGETARCH is provided
+# automatically by buildkit — pick the matching arch build (the generic
+# yt-dlp_linux is x86-64 only and rosetta-errors on arm64 images).
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        arm64) YT_ASSET=yt-dlp_linux_aarch64 ;; \
+        amd64|"") YT_ASSET=yt-dlp_linux ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH} for yt-dlp" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /usr/local/bin/yt-dlp \
+        "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/${YT_ASSET}" && \
+    chmod 0755 /usr/local/bin/yt-dlp
 
 # Chromium path for agent-browser / Playwright consumers
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
