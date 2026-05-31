@@ -66,6 +66,30 @@ function extFromMime(mime: string | null | undefined, fallback: string): string 
   return sub || fallback;
 }
 
+/**
+ * Identify an image by its magic bytes — authoritative, unlike Telegram photos
+ * which arrive with no mimeType (the original bug: everything became `.img`,
+ * which the agent's Read tool won't render as an image). Returns null if the
+ * buffer isn't a recognised image format.
+ */
+function sniffImageExt(buf: Buffer): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'gif';
+  if (
+    buf.length >= 12 &&
+    buf.toString('ascii', 0, 4) === 'RIFF' &&
+    buf.toString('ascii', 8, 12) === 'WEBP'
+  )
+    return 'webp';
+  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) return 'bmp';
+  if (buf.length >= 12 && buf.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buf.toString('ascii', 8, 12);
+    if (brand.startsWith('hei') || brand.startsWith('mif') || brand.startsWith('msf')) return 'heic';
+  }
+  return null;
+}
+
 function sanitize(s: string, max = 40): string {
   return (
     s
@@ -121,7 +145,10 @@ function toContainerPath(subdir: string, filename: string): string {
 export function archiveImage(buffer: Buffer, meta: ArchiveMeta): ArchivedFile | null {
   if (!MEDIA_ARCHIVE_DIR) return null;
   try {
-    const filename = buildName(meta, extFromMime(meta.mimeType, 'img'));
+    // Trust the bytes over the (often-absent) mimeType; default to jpg, since a
+    // chat image with neither a signature nor a mimeType is almost always JPEG.
+    const ext = sniffImageExt(buffer) ?? extFromMime(meta.mimeType, '') ?? 'jpg';
+    const filename = buildName(meta, ext || 'jpg');
     const hostPath = writeUnique(path.join(MEDIA_ARCHIVE_DIR, 'images'), filename, buffer);
     const actual = path.basename(hostPath);
     log.debug('Archived image to vault', { hostPath, size: buffer.length });
@@ -137,11 +164,7 @@ export function archiveImage(buffer: Buffer, meta: ArchiveMeta): ArchivedFile | 
  * that embeds the audio (`![[...]]`) and carries the transcript as its body.
  * Returns the audio ArchivedFile, or null if disabled / on failure.
  */
-export function archiveVoiceNote(
-  buffer: Buffer,
-  transcript: string | null,
-  meta: ArchiveMeta,
-): ArchivedFile | null {
+export function archiveVoiceNote(buffer: Buffer, transcript: string | null, meta: ArchiveMeta): ArchivedFile | null {
   if (!MEDIA_ARCHIVE_DIR) return null;
   try {
     const dir = path.join(MEDIA_ARCHIVE_DIR, 'voicenotes');
