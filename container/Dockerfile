@@ -26,6 +26,7 @@ ARG BUN_VERSION=1.3.12
 ARG GMAIL_MCP_VERSION=1.1.11
 ARG CALENDAR_MCP_VERSION=2.6.1
 ARG CALDAV_MCP_VERSION=0.9.2
+ARG MCPVAULT_VERSION=0.11.0
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -128,6 +129,12 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
 # /add-gcal-tool for the sibling Google pattern.
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install -g "caldav-mcp@${CALDAV_MCP_VERSION}"
+
+# Obsidian vault over MCP (read-write, no auth — reads a vault dir bind-mounted
+# into the container at /workspace/extra/obsidian-vault). Wired per-group to
+# North + Ayah. bin: `mcpvault <vault-path>`. See mcp-servers-to-add memory.
+RUN --mount=type=cache,target=/root/.cache/pnpm \
+    pnpm install -g "@bitbonsai/mcpvault@${MCPVAULT_VERSION}"
 
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
