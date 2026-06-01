@@ -18,10 +18,17 @@ const envConfig = readEnvFile([
   'COST_REPORT_HOUR',
   'MEDIA_ARCHIVE_DIR',
   'MEDIA_ARCHIVE_MOUNT',
+  'LOG_TEXT_FOR_ANALYTICS',
 ]);
 
 export const COST_REPORT_TARGET = process.env.COST_REPORT_TARGET || envConfig.COST_REPORT_TARGET || '';
 export const COST_REPORT_HOUR = process.env.COST_REPORT_HOUR || envConfig.COST_REPORT_HOUR || '';
+
+// Model-mix study: when 'true', the container stores raw inbound message text on
+// each per-turn analytics row. Stamped into every container.json at spawn, so
+// flipping this + restarting the service turns text capture on/off globally.
+export const LOG_TEXT_FOR_ANALYTICS =
+  (process.env.LOG_TEXT_FOR_ANALYTICS || envConfig.LOG_TEXT_FOR_ANALYTICS) === 'true';
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =

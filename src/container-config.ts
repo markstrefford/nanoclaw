@@ -11,7 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR } from './config.js';
+import { GROUPS_DIR, LOG_TEXT_FOR_ANALYTICS } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
@@ -43,6 +43,8 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  /** Global model-mix study flag — stamped from LOG_TEXT_FOR_ANALYTICS. */
+  logTextForAnalytics?: boolean;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -63,6 +65,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    logTextForAnalytics: LOG_TEXT_FOR_ANALYTICS || undefined,
   };
 }
 

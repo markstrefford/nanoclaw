@@ -158,9 +158,19 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
  * script. Defense-in-depth: if SDK_DISALLOWED_TOOLS slips through somehow,
  * block the call here instead of letting the agent hang.
  */
+// Per-turn tool accounting for the model-mix analytics. The poll-loop runs one
+// query at a time and consumes each turn's `result` event before the next, so a
+// module-level counter is safe: increment on every tool call, then read+reset
+// when a result event is emitted (see translateEvents). `turnEscalated` flips
+// when the agent invokes ask_user_question — a free escalation signal.
+let turnToolCalls = 0;
+let turnEscalated = false;
+
 const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
+  turnToolCalls += 1;
+  if (toolName.includes('ask_user_question')) turnEscalated = true;
   if (SDK_DISALLOWED_TOOLS.includes(toolName)) {
     return {
       decision: 'block',
@@ -464,8 +474,14 @@ export class ClaudeProvider implements AgentProvider {
               cacheCreationTokens: m.usage?.cache_creation_input_tokens ?? 0,
               costUsd: m.total_cost_usd ?? 0,
               numTurns: m.num_turns ?? 0,
+              toolCalls: turnToolCalls,
+              escalated: turnEscalated,
             };
           }
+          // Reset per-turn tool accounting now this turn's result is emitted,
+          // so a follow-up push within the same query starts a clean count.
+          turnToolCalls = 0;
+          turnEscalated = false;
           yield { type: 'result', text, usage };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };

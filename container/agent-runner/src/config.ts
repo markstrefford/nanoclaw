@@ -18,6 +18,11 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  /**
+   * When true, the per-turn analytics row stores the raw inbound message text
+   * (model-mix study). Host-controlled via LOG_TEXT_FOR_ANALYTICS; default off.
+   */
+  logTextForAnalytics: boolean;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,6 +52,7 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    logTextForAnalytics: raw.logTextForAnalytics === true,
   };
 
   return _config;

@@ -14,7 +14,8 @@ import {
   stripInternalTags,
   type RoutingContext,
 } from './formatter.js';
-import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
+import type { AgentProvider, AgentQuery, ProviderEvent, TurnContext } from './providers/types.js';
+import { getConfig } from './config.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -49,6 +50,46 @@ function log(msg: string): void {
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Best-effort plain text from a messages_in row. Chat content is JSON
+ * (`{"text": "..."}`); fall back to the raw string for anything else.
+ */
+function messageText(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as { text?: string };
+    if (typeof parsed?.text === 'string') return parsed.text;
+  } catch {
+    /* not JSON — use raw */
+  }
+  return content;
+}
+
+/**
+ * Build the per-turn analytics context from the batch about to be sent to the
+ * agent. `triggerKind`/`channelType` come from the most recent (triggering)
+ * message; raw text is captured only when LOG_TEXT_FOR_ANALYTICS is on.
+ * Attributed to the turn the initial batch opens — follow-up pushes within the
+ * same query inherit it (acceptable for the model-mix study).
+ */
+function buildTurnContext(batch: MessageInRow[]): TurnContext {
+  const trigger = batch[batch.length - 1];
+  const ctx: TurnContext = {
+    triggerKind: trigger?.kind,
+    channelType: trigger?.channel_type ?? undefined,
+    messageCount: batch.length,
+  };
+  let logText = false;
+  try {
+    logText = getConfig().logTextForAnalytics;
+  } catch {
+    /* config not loaded (tests) — leave text off */
+  }
+  if (logText) {
+    ctx.messageText = batch.map((m) => messageText(m.content)).join('\n---\n');
+  }
+  return ctx;
 }
 
 export interface PollLoopConfig {
@@ -218,8 +259,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
+    const turnContext = buildTurnContext(keep);
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
+      const result = await processQuery(query, routing, processingIds, config.providerName, turnContext);
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
@@ -300,6 +342,7 @@ async function processQuery(
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  turnContext: TurnContext,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -443,7 +486,7 @@ async function processQuery(
         markCompleted(initialBatchIds);
         if (event.usage) {
           try {
-            recordTokenUsage(event.usage);
+            recordTokenUsage(event.usage, { ...turnContext, outcome: event.text ? 'replied' : 'no_reply' });
           } catch (err) {
             log(`Failed to record token usage: ${err instanceof Error ? err.message : String(err)}`);
           }

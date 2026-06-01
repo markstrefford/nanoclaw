@@ -108,6 +108,23 @@ export interface TurnUsage {
   cacheCreationTokens: number;
   costUsd: number;
   numTurns: number;
+  /** Tool invocations during the turn (counted via the provider's tool hook). */
+  toolCalls?: number;
+  /** True if the agent asked the user a question this turn (escalation signal). */
+  escalated?: boolean;
+}
+
+/**
+ * Per-turn context the poll-loop knows but the provider does not — the inbound
+ * batch that triggered the turn. Recorded alongside TurnUsage for the model-mix
+ * analytics. `messageText` is only populated when LOG_TEXT_FOR_ANALYTICS is on.
+ */
+export interface TurnContext {
+  triggerKind?: string;
+  channelType?: string;
+  messageCount?: number;
+  outcome?: string;
+  messageText?: string;
 }
 
 export type ProviderEvent =

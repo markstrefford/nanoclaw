@@ -122,9 +122,35 @@ export function getOutboundDb(): Database {
         cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
         cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd              REAL    NOT NULL DEFAULT 0,
-        num_turns             INTEGER NOT NULL DEFAULT 0
+        num_turns             INTEGER NOT NULL DEFAULT 0,
+        -- Per-turn analytics (added for the model-mix study). Nullable so the
+        -- daily cost report keeps working on rows that predate these columns.
+        trigger_kind          TEXT,    -- inbound message kind: chat / task / agent / webhook
+        channel_type          TEXT,    -- platform: telegram / agent / task … (dm vs job vs tool)
+        message_count         INTEGER, -- messages grouped into this turn's batch
+        tool_calls            INTEGER, -- tool invocations during the turn
+        outcome               TEXT,    -- replied / no_reply
+        escalated             INTEGER, -- 1 if ask_user_question fired this turn
+        message_text          TEXT     -- raw inbound text, only when LOG_TEXT_FOR_ANALYTICS=true
       );
     `);
+    // Forward-compat: add the analytics columns to outbound.db files created
+    // before this feature. SQLite ignores nothing here — a duplicate-column
+    // ALTER throws, so guard each against the live column set.
+    const tuCols = new Set(
+      (_outbound.prepare("PRAGMA table_info('token_usage')").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const [col, type] of [
+      ['trigger_kind', 'TEXT'],
+      ['channel_type', 'TEXT'],
+      ['message_count', 'INTEGER'],
+      ['tool_calls', 'INTEGER'],
+      ['outcome', 'TEXT'],
+      ['escalated', 'INTEGER'],
+      ['message_text', 'TEXT'],
+    ] as const) {
+      if (!tuCols.has(col)) _outbound.exec(`ALTER TABLE token_usage ADD COLUMN ${col} ${type}`);
+    }
   }
   return _outbound;
 }
