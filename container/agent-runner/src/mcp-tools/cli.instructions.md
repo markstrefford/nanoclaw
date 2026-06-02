@@ -33,6 +33,7 @@ Additional resources (available under `global` scope only): messaging-groups, wi
 - **Restarting your container** — `ncl groups restart` (with optional `--rebuild` and `--message`).
 - **Checking who's in your group** — `ncl members list`.
 - **Seeing your destinations** — `ncl destinations list`.
+- **Reporting token spend / cost** — when the user asks "what's our usage / cost / spend" for any period, run `ncl cost` (today so far), `ncl cost yesterday`, `ncl cost month`, or `ncl cost <N>` (trailing N days), then relay the output. Open and read-only — no approval, spends no agent tokens.
 - **Answering questions about the system** — query `ncl` rather than guessing.
 
 ### Access rules
@@ -61,6 +62,7 @@ ncl groups config get
 ncl sessions list
 ncl destinations list
 ncl members list
+ncl cost              # today's token spend; also: yesterday | month | <N> days
 
 # Write commands (approval required)
 ncl groups restart
