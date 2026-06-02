@@ -246,7 +246,10 @@ export async function sendDailyCostReport(): Promise<void> {
     return;
   }
   try {
-    await adapter.deliver(channelType, platformId, threadId ?? null, 'text', report);
+    // The delivery adapter JSON.parses `content` into the message object the
+    // channel bridge expects (`{ text }`). Passing raw text made it throw
+    // "not valid JSON" on the report's leading emoji, so the report never sent.
+    await adapter.deliver(channelType, platformId, threadId ?? null, 'chat-sdk', JSON.stringify({ text: report }));
     log.info('Cost report sent');
   } catch (err) {
     log.error('Cost report delivery failed', { err });

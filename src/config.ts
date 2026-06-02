@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'MEDIA_ARCHIVE_DIR',
   'MEDIA_ARCHIVE_MOUNT',
   'LOG_TEXT_FOR_ANALYTICS',
+  'USE_CUSTOM_GMAIL',
 ]);
 
 export const COST_REPORT_TARGET = process.env.COST_REPORT_TARGET || envConfig.COST_REPORT_TARGET || '';
@@ -29,6 +30,14 @@ export const COST_REPORT_HOUR = process.env.COST_REPORT_HOUR || envConfig.COST_R
 // flipping this + restarting the service turns text capture on/off globally.
 export const LOG_TEXT_FOR_ANALYTICS =
   (process.env.LOG_TEXT_FOR_ANALYTICS || envConfig.LOG_TEXT_FOR_ANALYTICS) === 'true';
+
+// Custom (per-group, direct-to-provider) Gmail/Calendar. When 'true', any MCP
+// server that declares NO_PROXY in its env has its proxy vars blanked at
+// materialization so its traffic bypasses the OneCLI gateway and uses the
+// group's own credentials. Without this the gateway substitutes its connected
+// (business) Google account on Gmail calls. Toggle off to route everything back
+// through the gateway. See docs/UPDATES.md.
+export const USE_CUSTOM_GMAIL = (process.env.USE_CUSTOM_GMAIL || envConfig.USE_CUSTOM_GMAIL) === 'true';
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =

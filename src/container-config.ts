@@ -11,7 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { GROUPS_DIR, LOG_TEXT_FOR_ANALYTICS } from './config.js';
+import { GROUPS_DIR, LOG_TEXT_FOR_ANALYTICS, USE_CUSTOM_GMAIL } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
@@ -47,10 +47,39 @@ export interface ContainerConfig {
   logTextForAnalytics?: boolean;
 }
 
+// Proxy env vars to blank when a server opts out of the gateway.
+const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'];
+
+/**
+ * Gateway bypass for direct-to-provider MCP servers.
+ *
+ * The OneCLI gateway (HTTPS_PROXY injected container-wide) substitutes its
+ * connected Google account on Gmail API calls — which overrides a group's own
+ * personal credentials and serves the wrong mailbox. A server signals "reach
+ * the provider directly with my own credentials" by declaring NO_PROXY in its
+ * env. NO_PROXY alone is NOT honoured by the Node HTTP clients in use
+ * (undici / gaxios), so when USE_CUSTOM_GMAIL is enabled we blank the proxy
+ * vars for those servers — the only setting that actually bypasses the gateway.
+ *
+ * Servers without NO_PROXY (e.g. North's gateway-routed business Gmail) are
+ * untouched. Gating on USE_CUSTOM_GMAIL makes this globally switchable.
+ */
+function applyGatewayBypass(mcpServers: Record<string, McpServerConfig>): void {
+  if (!USE_CUSTOM_GMAIL) return;
+  for (const server of Object.values(mcpServers)) {
+    const env = server.env;
+    if (env && (env.NO_PROXY || env.no_proxy)) {
+      for (const v of PROXY_VARS) env[v] = '';
+    }
+  }
+}
+
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
 export function configFromDb(row: ContainerConfigRow, group: AgentGroup): ContainerConfig {
+  const mcpServers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
+  applyGatewayBypass(mcpServers);
   return {
-    mcpServers: JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>,
+    mcpServers,
     packages: {
       apt: JSON.parse(row.packages_apt) as string[],
       npm: JSON.parse(row.packages_npm) as string[],
