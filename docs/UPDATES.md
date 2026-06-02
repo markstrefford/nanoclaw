@@ -42,5 +42,16 @@ Ask Ayah to *search her inbox* (e.g. "list my recent emails") — that uses `mcp
 direct → personal. Note: an ad-hoc `Bash` curl from the agent still goes through the gateway
 (→ business), so "what account am I on?" self-checks are misleading; trust the email tools.
 
+### If it suddenly stops working (observability)
+The most likely regression is `USE_CUSTOM_GMAIL` getting lost (e.g. `.env` not carried to a new
+environment), silently reverting Ayah to the gateway/business mailbox. This is **logged on every
+spawn** — one grep tells you the state:
+```
+grep -E "Gateway bypass" logs/nanoclaw*.log
+```
+- `Gateway bypass ACTIVE (direct-to-provider…)` → working (flag on, Ayah direct).
+- `Gateway bypass OFF: … USE_CUSTOM_GMAIL is not "true"` → broken; set `USE_CUSTOM_GMAIL=true` in
+  `.env` and restart. The flag is also documented in `.env.example`.
+
 ### Restart
 `launchctl kickstart -k gui/$(id -u)/com.nanoclaw-v2-8a163795`

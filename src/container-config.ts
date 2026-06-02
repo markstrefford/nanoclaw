@@ -14,6 +14,7 @@ import path from 'path';
 import { GROUPS_DIR, LOG_TEXT_FOR_ANALYTICS, USE_CUSTOM_GMAIL } from './config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { log } from './log.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
@@ -64,20 +65,37 @@ const PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'];
  * Servers without NO_PROXY (e.g. North's gateway-routed business Gmail) are
  * untouched. Gating on USE_CUSTOM_GMAIL makes this globally switchable.
  */
-function applyGatewayBypass(mcpServers: Record<string, McpServerConfig>): void {
-  if (!USE_CUSTOM_GMAIL) return;
-  for (const server of Object.values(mcpServers)) {
+function applyGatewayBypass(mcpServers: Record<string, McpServerConfig>): string[] {
+  const wanted: string[] = [];
+  for (const [name, server] of Object.entries(mcpServers)) {
     const env = server.env;
     if (env && (env.NO_PROXY || env.no_proxy)) {
-      for (const v of PROXY_VARS) env[v] = '';
+      wanted.push(name);
+      if (USE_CUSTOM_GMAIL) for (const v of PROXY_VARS) env[v] = '';
     }
   }
+  return wanted;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
 export function configFromDb(row: ContainerConfigRow, group: AgentGroup): ContainerConfig {
   const mcpServers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
-  applyGatewayBypass(mcpServers);
+  // Visibility: log the bypass decision every spawn so a silent regression
+  // (Ayah's Gmail reverting to the gateway/business account) is one grep away.
+  const wantsDirect = applyGatewayBypass(mcpServers);
+  if (wantsDirect.length > 0) {
+    if (USE_CUSTOM_GMAIL) {
+      log.info('Gateway bypass ACTIVE (direct-to-provider, own credentials)', {
+        group: group.name,
+        servers: wantsDirect,
+      });
+    } else {
+      log.warn(
+        'Gateway bypass OFF: group declares direct-to-provider MCP (NO_PROXY) but USE_CUSTOM_GMAIL is not "true" — Gmail/Calendar will route through the OneCLI gateway and may resolve to the gateway account. Set USE_CUSTOM_GMAIL=true to fix.',
+        { group: group.name, servers: wantsDirect },
+      );
+    }
+  }
   return {
     mcpServers,
     packages: {
