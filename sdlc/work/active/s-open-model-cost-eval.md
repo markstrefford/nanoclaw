@@ -74,16 +74,49 @@ consumers depend on this story's output yet.
 - The comparison reports cost per successful task alongside those quality grades,
   leading to a plain go/no-go recommendation on pursuing a model switch.
 
-## Open questions (for Plan)
+## Decision basis (set with operator, 2026-06-06)
 
-- Which single task becomes the house benchmark, and who/what grades it.
-- How Kimi K2.6 is reached through the container runner, and how much of the
-  abandoned OpenAI-runner work is reusable.
-- Whether to include any third model, or keep it strictly Kimi vs Sonnet.
+Deliberately simple — no quality rubric, no blind scoring, no controlled probe
+(all considered and rejected as overcomplication for a reversible spike):
 
-### Detailed implementation
-*Populated at Plan time. Source material does not ground this level of detail.*
+- **Cost = the real number.** Kimi priced correctly (t70), compared rough
+  before/after on the same agent. This is the quantitative side.
+- **Quality = Mark's direct read** over the live window. He can tell.
+- **Decision rule:** clearly worse → revert; clearly better → switch candidate;
+  too close to call → cheapest wins (Kimi). Trivial swap-back is the safety net.
+
+## Open questions (resolved at Plan, 2026-06-06)
+
+- **How Kimi is reached:** Via Moonshot's Anthropic-compatible endpoint as a v2
+  provider (`src/providers/kimi.ts`, mirror of `claude.ts`), so Kimi runs the
+  FULL agent toolset — the v1 tool handicap disappears. Registered in BOTH the
+  host and container provider registries (container reuses `ClaudeProvider`). The
+  abandoned v1 OpenAI-runner mechanics do NOT carry; only the v1 t40 pricing
+  logic ports (→ t70).
+- **Third model:** No. Strictly Kimi K2.6 vs Sonnet 4.6.
+
+## Trial group decision (2026-06-06)
+
+Iris/Ayah (Mark's personal agent), live. Chosen over North (bigger,
+business-linked blast radius) and over a sandbox (too slow to stand up, and
+without the real Gmail/Calendar integrations the comparison is meaningless).
+Bounded by per-group, no-rebuild reversibility.
+
+### v2 task roadmap (no parent epic — roadmap lives here)
+
+Execution order:
+
+- t60 — reach Kimi K2.6 through the v2 runner (provider + vault key)
+- t70 — price non-Claude models correctly in the cost path (the real work)
+- t80 — flip Iris to Kimi, sanity-check the cost number, run the multi-day trial
+- t50 — compare cost, take Mark's quality read, decide under the fixed rule
+
+Reference (v1, done, do not run as the trial): t10 tool-parity, t30
+base-url-passthrough, t40 per-model-cost — committed on `feat/token-tracking`
+in the v1 `nanoclaw` tree.
 
 ## Status
 
-Compiled 2026-06-05 from raw/eval-open-source-models-kimi.md. Awaiting Plan.
+Compiled 2026-06-05. Planned 2026-06-06 (replanned for the v1→v2 pivot; v1-shaped
+t20 retired and t50 rewritten, t60/t70/t80 added; decision basis simplified to
+cost + operator's qualitative read). Ready for execute.
