@@ -2,7 +2,7 @@
 id: s-open-model-cost-eval-t60-kimi-provider
 kind: task
 project: nanoclaw
-status: active
+status: done
 autonomy: attended
 parent: s-open-model-cost-eval
 created: 2026-06-06
