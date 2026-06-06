@@ -17,6 +17,7 @@ import Database from 'better-sqlite3';
 
 import { COST_REPORT_HOUR, COST_REPORT_TARGET } from './config.js';
 import { getDb } from './db/connection.js';
+import { getModelRates, priceTurn } from './model-pricing.js';
 import { outboundDbPath } from './session-manager.js';
 import { getDeliveryAdapter } from './delivery.js';
 import { log } from './log.js';
@@ -30,6 +31,12 @@ interface BotTotals {
   cost: number;
   turns: number;
   calls: number;
+  /** Distinct model ids seen in this group's window (for the per-bot label). */
+  models: Set<string>;
+  /** True if any row's model had no rate entry → cost fell back to SDK pricing. */
+  unpriced: boolean;
+  /** True if any priced row used a documented-assumption rate (e.g. Kimi cache-write). */
+  assumed: boolean;
 }
 
 interface SessionRef {
@@ -50,6 +57,59 @@ function listSessions(): SessionRef[] {
     .all() as SessionRef[];
 }
 
+/** One `token_usage` row as read for pricing. */
+export interface UsageRow {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  /** SDK `total_cost_usd` (Anthropic-priced cumulative) — used only as the unknown-model fallback. */
+  cost: number;
+  turns: number;
+  model: string | null;
+}
+
+export interface PricedWindow {
+  cost: number;
+  unpriced: boolean;
+  assumed: boolean;
+  models: Set<string>;
+}
+
+/**
+ * Price an ordered window of rows. Each row is costed by its own model from the
+ * rate table; rows whose model has no entry fall back to the cumulative
+ * `cost_usd` series (add the increment while it climbs; treat a drop as a new
+ * container run). `prevCost` tracks across ALL rows so the fallback series stays
+ * continuous even when priced (Kimi/Claude) and unpriced rows interleave — which
+ * is exactly what a mid-window provider flip produces.
+ */
+export function priceRows(rows: UsageRow[]): PricedWindow {
+  let cost = 0;
+  let prevCost: number | null = null;
+  let unpriced = false;
+  let assumed = false;
+  const models = new Set<string>();
+  for (const r of rows) {
+    const rates = getModelRates(r.model);
+    if (rates) {
+      cost += priceTurn(r.model, {
+        input: r.input,
+        output: r.output,
+        cacheRead: r.cacheRead,
+        cacheCreation: r.cacheCreation,
+      })!;
+      if (!rates.exact) assumed = true;
+    } else {
+      cost += prevCost === null || r.cost < prevCost ? r.cost : r.cost - prevCost;
+      unpriced = true;
+    }
+    prevCost = r.cost;
+    if (r.model) models.add(r.model);
+  }
+  return { cost, unpriced, assumed, models };
+}
+
 /**
  * Sum token_usage rows in [sinceIso, untilIso) across every session, grouped by
  * agent group. Missing DBs / tables (older sessions) are skipped silently.
@@ -67,11 +127,12 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
     try {
       db.pragma('busy_timeout = 2000');
       // Token/turn fields are per-result increments → SUM is correct.
-      // cost_usd is NOT: the SDK reports `total_cost_usd` as a running total
-      // for the current container run, resetting to a fresh series each time
-      // the container respawns. SUMming it directly (the original bug) summed
-      // a cumulative metric and inflated the total ~10x+. Fetch the ordered
-      // series and reconstruct incremental spend below.
+      // Cost is priced per-row from the model rate table (model-pricing.ts), NOT
+      // from cost_usd: the SDK reports `total_cost_usd` as an Anthropic-priced
+      // running total, which is wrong for a non-Claude model reached through an
+      // Anthropic-compatible endpoint (Kimi via Moonshot). Rows whose model has
+      // no rate entry fall back to the cumulative cost_usd series (the old
+      // behaviour) and flag the group "unpriced".
       const rows = db
         .prepare(
           `SELECT
@@ -80,7 +141,8 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
              COALESCE(cache_read_tokens, 0)     AS cacheRead,
              COALESCE(cache_creation_tokens, 0) AS cacheCreation,
              COALESCE(cost_usd, 0)              AS cost,
-             COALESCE(num_turns, 0)             AS turns
+             COALESCE(num_turns, 0)             AS turns,
+             model                              AS model
            FROM token_usage
            WHERE ts >= ? AND ts < ?
            ORDER BY ts`,
@@ -92,20 +154,12 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
         cacheCreation: number;
         cost: number;
         turns: number;
+        model: string | null;
       }>;
 
       if (rows.length === 0) continue;
 
-      // Walk the cumulative cost series: add the increment while it climbs,
-      // and treat any drop as a new container run whose starting value is real
-      // spend. (A run that straddles the window's start slightly over-counts
-      // its pre-window portion; negligible given the ~30min container ceiling.)
-      let cost = 0;
-      let prevCost: number | null = null;
-      for (const r of rows) {
-        cost += prevCost === null || r.cost < prevCost ? r.cost : r.cost - prevCost;
-        prevCost = r.cost;
-      }
+      const { cost, unpriced, assumed, models } = priceRows(rows);
 
       const acc = byGroup.get(s.group_name) ?? {
         name: s.group_name,
@@ -116,6 +170,9 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
         cost: 0,
         turns: 0,
         calls: 0,
+        models: new Set<string>(),
+        unpriced: false,
+        assumed: false,
       };
       for (const r of rows) {
         acc.input += r.input;
@@ -126,6 +183,9 @@ export function collectUsage(sinceIso: string, untilIso: string): BotTotals[] {
       }
       acc.cost += cost;
       acc.calls += rows.length;
+      acc.unpriced = acc.unpriced || unpriced;
+      acc.assumed = acc.assumed || assumed;
+      for (const m of models) acc.models.add(m);
       byGroup.set(s.group_name, acc);
     } catch {
       // token_usage table absent on this (pre-feature) session DB — skip.
@@ -141,6 +201,30 @@ function humanTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
   return String(n);
+}
+
+/** Short model label for a bot line — e.g. "kimi-k2.6", or "" when unknown. */
+function labelModels(models: Set<string>): string {
+  const ids = [...models].filter(Boolean);
+  if (ids.length === 0) return '';
+  if (ids.length === 1) return ids[0];
+  return `${ids.length} models`;
+}
+
+/**
+ * Footnote that is honest about how the cost was derived:
+ *  - all rows priced from the rate table, every rate published → no footnote.
+ *  - some priced via a documented-assumption rate (Kimi cache-write) → flag it.
+ *  - some rows had no rate entry → fell back to model-reported (Anthropic) cost.
+ */
+function pricingFootnote(totals: BotTotals[]): string | null {
+  const unpriced = totals.filter((t) => t.unpriced).map((t) => t.name);
+  const assumed = totals.some((t) => t.assumed);
+  if (unpriced.length === 0 && !assumed) return null;
+  const parts: string[] = [];
+  if (assumed) parts.push('Kimi cache-write priced at input rate (Moonshot publishes no cache-write rate)');
+  if (unpriced.length > 0) parts.push(`${unpriced.join(', ')} uses model-reported pricing (approximate)`);
+  return `_${parts.join('; ')}._`;
 }
 
 /** Format a collected window into a Telegram-friendly plain-text report. */
@@ -160,15 +244,21 @@ export function formatReport(
   for (const t of totals) {
     cost += t.cost;
     turns += t.turns;
+    const model = labelModels(t.models);
     lines.push(
-      `*${t.name}* — $${t.cost.toFixed(2)} · ${humanTokens(t.input)} in / ${humanTokens(t.output)} out · ${t.turns} turns`,
+      `*${t.name}*${model ? ` (${model})` : ''} — $${t.cost.toFixed(2)} · ${humanTokens(t.input)} in / ${humanTokens(
+        t.output,
+      )} out · ${t.turns} turns`,
     );
   }
   lines.push(
     '',
     `*Total* — $${cost.toFixed(2)} · ${turns} turns across ${totals.length} bot${totals.length === 1 ? '' : 's'}`,
   );
-  if (opts.footnote !== false) lines.push('', '_$ assumes API pricing; approximate._');
+  if (opts.footnote !== false) {
+    const note = pricingFootnote(totals);
+    if (note) lines.push('', note);
+  }
   return lines.join('\n');
 }
 
