@@ -1,9 +1,10 @@
-# State — last updated 2026-06-06
+# State — last updated 2026-06-08
 
-**Active focus:** s-open-model-cost-eval — Kimi K2.6 trial is **LIVE on Ayah/Iris**, accruing. Letting it run a couple of days before the verdict.
+**Active focus:** s-open-model-cost-eval — Kimi K2.6 trial is **LIVE on BOTH groups (Ayah/Iris + North)**, accruing. Letting it run a couple of days before the verdict.
 
-**Status — Ayah is on Kimi and working (deployed 2026-06-06 ~17:21):**
+**Status — both groups on Kimi (Ayah deployed 2026-06-06 ~17:21; North flipped 2026-06-08):**
 - `container_configs` for Ayah (f1399cd4-9b7d-4325-8935-49cd9b8a3e34): `provider=kimi, model=kimi-k2.6`.
+- `container_configs` for North (ag-1780055476622-jk9cck): `provider=kimi, model=kimi-k2.6`. North's OneCLI agent already `secretMode: all` — no rebuild/restart needed (config is a live per-spawn DB read; running host already serves Kimi). Takes effect on North's next message.
 - Reached via Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`) → full Claude Agent SDK, full toolset, NO tool handicap.
 - Moonshot key is a OneCLI vault secret ("Moonshot Kimi", host api.moonshot.ai, Bearer); Ayah's OneCLI agent is `secretMode: all`. Key is NOT in .env on v2.
 - Root cause of the earlier outage: live host was running stale pre-Kimi compiled code. Fix = `pnpm run build` + restart the slug-labelled service (`com.nanoclaw-v2-8a163795`). Container agent-runner src is bind-mounted, so no image rebuild was actually required.
