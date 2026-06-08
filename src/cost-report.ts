@@ -245,8 +245,13 @@ export function formatReport(
     cost += t.cost;
     turns += t.turns;
     const model = labelModels(t.models);
+    // "in" = ALL input the model processed (fresh + cache-read + cache-write), not
+    // just uncached input_tokens. Providers split the same prompt across these
+    // buckets differently — Claude buries nearly everything in cache, Kimi reports
+    // most as plain input — so only the sum is comparable across bots.
+    const totalIn = t.input + t.cacheRead + t.cacheCreation;
     lines.push(
-      `*${t.name}*${model ? ` (${model})` : ''} — $${t.cost.toFixed(2)} · ${humanTokens(t.input)} in / ${humanTokens(
+      `*${t.name}*${model ? ` (${model})` : ''} — $${t.cost.toFixed(2)} · ${humanTokens(totalIn)} in / ${humanTokens(
         t.output,
       )} out · ${t.turns} turns`,
     );
