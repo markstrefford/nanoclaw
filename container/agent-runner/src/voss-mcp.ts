@@ -19,6 +19,24 @@ import { z } from 'zod';
 const API_URL = (process.env.VOSS_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 // Placeholder only — OneCLI injects the real key for the VOSS host pattern.
 const API_KEY = process.env.VOSS_API_KEY || 'onecli-managed';
+// Bound every request. The backend is Modal-hosted and cold-starts; without a
+// timeout a stalled connection hangs the whole agent turn indefinitely, freezes
+// the heartbeat, and the host kills the container at the 30-min ceiling. A
+// bounded fetch fails fast with a clear error the agent can report instead.
+const FETCH_TIMEOUT_MS = Number(process.env.VOSS_FETCH_TIMEOUT_MS) || 30_000;
+
+async function timedFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new Error(
+        `VOSS CRM request timed out after ${FETCH_TIMEOUT_MS}ms (${url}). The backend may be cold-starting or unavailable — try again shortly.`,
+      );
+    }
+    throw err;
+  }
+}
 
 async function apiGet(path: string, params?: Record<string, string>): Promise<unknown> {
   let url = `${API_URL}${path}`;
@@ -26,7 +44,7 @@ async function apiGet(path: string, params?: Record<string, string>): Promise<un
     const filtered = Object.entries(params).filter(([, v]) => v);
     if (filtered.length) url += '?' + new URLSearchParams(filtered).toString();
   }
-  const resp = await fetch(url, {
+  const resp = await timedFetch(url, {
     headers: { 'X-API-Key': API_KEY },
   });
   if (!resp.ok) throw new Error(`API error ${resp.status}: ${await resp.text()}`);
@@ -34,7 +52,7 @@ async function apiGet(path: string, params?: Record<string, string>): Promise<un
 }
 
 async function apiPost(path: string, data: Record<string, unknown>): Promise<unknown> {
-  const resp = await fetch(`${API_URL}${path}`, {
+  const resp = await timedFetch(`${API_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
     body: JSON.stringify(data),
@@ -44,7 +62,7 @@ async function apiPost(path: string, data: Record<string, unknown>): Promise<unk
 }
 
 async function apiPut(path: string, data: Record<string, unknown>): Promise<unknown> {
-  const resp = await fetch(`${API_URL}${path}`, {
+  const resp = await timedFetch(`${API_URL}${path}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
     body: JSON.stringify(data),
