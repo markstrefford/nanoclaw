@@ -1,6 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
+import { TurnProgress } from './turn-progress.js';
 import { recordTokenUsage } from './db/token-usage.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
@@ -19,6 +20,7 @@ import { getConfig } from './config.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+const STATUS_TICK_INTERVAL_MS = 1500;
 
 /**
  * Number of consecutive `database disk image is malformed` errors after which
@@ -348,6 +350,21 @@ async function processQuery(
   let done = false;
   let unwrappedNudged = false;
 
+  // Live progress-status line: after a few seconds of silent work, post a
+  // "⏳ Working on it…" line to the conversation, update it in place as tools
+  // run, and delete it when the turn's result lands. See turn-progress.ts.
+  const progress = new TurnProgress();
+  progress.start();
+  let turnEnded = false;
+  const statusHandle = setInterval(() => {
+    if (done) return;
+    try {
+      progress.tick();
+    } catch (err) {
+      log(`Progress tick error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, STATUS_TICK_INTERVAL_MS);
+
   // Concurrent polling: push follow-ups into the active query as they arrive.
   // We do NOT force-end the stream on silence — keeping the query open avoids
   // re-spawning the SDK subprocess (~few seconds) and re-loading the .jsonl
@@ -467,6 +484,17 @@ async function processQuery(
       handleEvent(event, routing);
       touchHeartbeat();
 
+      // Drive the progress-status line. A follow-up pushed into the open query
+      // after a result starts a fresh turn — restart tracking on the next
+      // non-result event so each turn gets its own status line.
+      if (turnEnded && event.type !== 'result') {
+        progress.start();
+        turnEnded = false;
+      }
+      if (event.type === 'progress') {
+        progress.noteProgress(event.message);
+      }
+
       if (event.type === 'init') {
         queryContinuation = event.continuation;
         // Persist immediately so a mid-turn container crash still lets the
@@ -484,6 +512,11 @@ async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
+        // Clear the progress-status line now the real result is landing.
+        // Fire-and-forget: finish() snapshots its state so a follow-up turn
+        // can start() immediately without racing the pending delete.
+        turnEnded = true;
+        void progress.finish();
         if (event.usage) {
           try {
             recordTokenUsage(event.usage, { ...turnContext, outcome: event.text ? 'replied' : 'no_reply' });
@@ -510,6 +543,10 @@ async function processQuery(
   } finally {
     done = true;
     clearInterval(pollHandle);
+    clearInterval(statusHandle);
+    // Ensure any lingering status line is removed even if the stream ended
+    // without a final result (command end, error, abort).
+    await progress.finish();
   }
 
   return { continuation: queryContinuation };

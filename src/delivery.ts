@@ -199,7 +199,7 @@ async function drainSession(session: Session): Promise<void> {
         // back. Skip the pause for internal traffic (system actions,
         // agent-to-agent routing) — the user doesn't see those and
         // shouldn't get a gap in their typing indicator for them.
-        if (msg.kind !== 'system' && msg.channel_type !== 'agent') {
+        if (msg.kind !== 'system' && msg.kind !== 'progress' && msg.channel_type !== 'agent') {
           pauseTypingRefreshAfterDelivery(session.id);
         }
       } catch (err) {

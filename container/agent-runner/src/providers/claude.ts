@@ -5,6 +5,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { toolLabel } from '../tool-labels.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput, TurnUsage } from './types.js';
 
@@ -447,6 +448,21 @@ export class ClaudeProvider implements AgentProvider {
 
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };
+
+        // Surface tool invocations as progress so the status line can show what
+        // the agent is doing ("Searching the vault…") rather than just elapsed.
+        if ((message as { type?: string }).type === 'assistant') {
+          const content = (message as { message?: { content?: unknown } }).message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              const b = block as { type?: string; name?: string; input?: unknown };
+              if (b?.type === 'tool_use' && b.name) {
+                const label = toolLabel(b.name, b.input);
+                if (label) yield { type: 'progress', message: label };
+              }
+            }
+          }
+        }
 
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
