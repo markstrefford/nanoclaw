@@ -2,11 +2,11 @@
 id: s-open-model-cost-eval-t80-trial
 kind: task
 project: nanoclaw
-status: active
+status: done
 autonomy: attended
 parent: s-open-model-cost-eval
 created: 2026-06-06
-updated: 2026-06-06
+updated: 2026-06-12
 ---
 
 # t80 — Flip Iris to Kimi and run the multi-day trial
@@ -61,4 +61,6 @@ Grounded in code read at plan time:
 
 ## Status
 
-active
+done — Trial ran live on Ayah, then extended to North; both stable on real traffic
+for several days. Caching confirmed through Moonshot (cache_read climbs across
+turns). Closed 2026-06-12 alongside t50.

@@ -2,11 +2,11 @@
 id: s-open-model-cost-eval-t50-run-and-report
 kind: task
 project: nanoclaw
-status: active
+status: done
 autonomy: attended
 parent: s-open-model-cost-eval
 created: 2026-06-05
-updated: 2026-06-06
+updated: 2026-06-12
 ---
 
 # t50 — Compare cost, call quality, decide go/no-go
@@ -56,4 +56,5 @@ Grounded in what exists after the prior tasks:
 
 ## Status
 
-active
+done — Verdict: GO (cheapest-wins, and clearly better-and-cheaper). Kimi ~1–2¢/turn
+vs Sonnet $0.60–1.30; Mark's quality read = no drop. Closed 2026-06-12.

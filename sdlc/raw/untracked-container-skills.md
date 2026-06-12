@@ -1,0 +1,1 @@
+Four untracked container skill folders sitting in container/skills/ — not yet committed to git: capabilities/, moltbook-heartbeat/, status/, strategic-cards/. Each has only a SKILL.md. Need to check content, understand what they are, and decide whether to commit them or discard.

@@ -2,11 +2,11 @@
 id: s-open-model-cost-eval
 kind: story
 project: nanoclaw
-status: active
+status: done
 autonomy: attended
 sources: [raw/eval-open-source-models-kimi.md]
 created: 2026-06-05
-updated: 2026-06-05
+updated: 2026-06-12
 ---
 
 # Use-case eval harness + Kimi K2.6 vs Sonnet 4.6 cost trial
@@ -119,4 +119,13 @@ in the v1 `nanoclaw` tree.
 
 Compiled 2026-06-05. Planned 2026-06-06 (replanned for the v1→v2 pivot; v1-shaped
 t20 retired and t50 rewritten, t60/t70/t80 added; decision basis simplified to
-cost + operator's qualitative read). Ready for execute.
+cost + operator's qualitative read). Executed t60/t70/t80/t50. Closed 2026-06-12.
+
+## Verdict (operator, 2026-06-12) — GO, eval closed
+
+Kimi K2.6 adopted. Now running live on **both** agents (Ayah + North), not just the
+trial group — working great on real traffic. Cost landed ~1–2¢/turn vs Sonnet's
+$0.60–1.30 (the external ~6×-cheaper claim held and then some), with no quality
+drop on Mark's direct read. The decision rule resolved cleanly on the "clearly
+better and cheaper" branch, so the otherwise-out-of-scope production switch was
+taken affirmatively. Swap-back stays a per-group one-liner if ever needed.
