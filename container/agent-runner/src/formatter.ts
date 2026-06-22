@@ -1,6 +1,6 @@
 import { findByRouting } from './destinations.js';
 import type { MessageInRow } from './db/messages-in.js';
-import { TIMEZONE, formatLocalTime } from './timezone.js';
+import { TIMEZONE, formatLocalTime, formatNowLocal } from './timezone.js';
 
 /**
  * Command categories for messages starting with '/'.
@@ -117,17 +117,20 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
 /**
  * Format a batch of messages_in rows into a prompt string.
  *
- * Prepends a `<context timezone="<IANA>" />` header so the agent always knows
- * what timezone it's in — every timestamp it sees in message bodies is the
+ * Prepends a `<context timezone="<IANA>" now="<local date/time>" />` header so
+ * the agent always knows both what timezone it's in and what the current
+ * absolute date/time is. Every timestamp it sees in message bodies is the
  * user's local time, and every time it produces (schedules, suggests) should
- * be interpreted as local time in that same zone. This header is v1 behavior
- * (src/v1/router.ts:20-22); dropping it led to misinterpretations where the
- * agent scheduled tasks for the wrong hour.
+ * be interpreted as local time in that same zone. The timezone half is v1
+ * behavior (src/v1/router.ts:20-22); dropping it led to misinterpretations
+ * where the agent scheduled tasks for the wrong hour. The `now` half pins the
+ * current day so "today" (calendar/email queries in daily briefings) resolves
+ * correctly even when the serving model's own host clock is in another zone.
  *
  * Strips routing fields — the agent never sees platform_id, channel_type, thread_id.
  */
 export function formatMessages(messages: MessageInRow[]): string {
-  const header = `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
+  const header = `<context timezone="${escapeXml(TIMEZONE)}" now="${escapeXml(formatNowLocal(TIMEZONE))}" />\n`;
   if (messages.length === 0) return header;
 
   // Group by kind

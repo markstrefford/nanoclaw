@@ -48,6 +48,30 @@ export function formatLocalTime(utcIso: string, timezone: string): string {
   });
 }
 
+/**
+ * Format the *current* wall-clock time in the given timezone as a human string
+ * including the weekday, e.g. "Mon, Jun 22, 2026, 10:46 AM".
+ *
+ * This is the absolute date/time anchor injected into every turn's context
+ * header. Without it, a model only knows which *zone* it's in, not what day it
+ * is — and a model whose own host clock sits in a different zone (or in UTC)
+ * will guess "today" wrong, fetching the previous day's calendar/email near
+ * midnight UTC. Pinning the date in-context makes "today" unambiguous for any
+ * model regardless of where it is served.
+ */
+export function formatNowLocal(timezone: string): string {
+  return new Date().toLocaleString('en-US', {
+    timeZone: resolveTimezone(timezone),
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
 function resolveContainerTimezone(): string {
   const candidates = [process.env.TZ, Intl.DateTimeFormat().resolvedOptions().timeZone];
   for (const tz of candidates) {

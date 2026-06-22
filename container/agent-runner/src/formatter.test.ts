@@ -51,6 +51,13 @@ describe('context timezone header', () => {
     expect(result).toContain(`<context timezone="${TIMEZONE}"`);
   });
 
+  it('pins the current date/time via a now="..." attribute', () => {
+    // The anchor lets "today" (calendar/email queries) resolve correctly even
+    // when the serving model's own host clock sits in another timezone.
+    const result = formatMessages([]);
+    expect(result).toMatch(/<context timezone="[^"]+" now="[^"]+" \/>/);
+  });
+
   it('header comes before the first <message> block when multiple are present', () => {
     insertMessage('m1', 'chat', { sender: 'Alice', text: 'one' });
     insertMessage('m2', 'chat', { sender: 'Bob', text: 'two' });
