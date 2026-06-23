@@ -58,6 +58,14 @@ describe('context timezone header', () => {
     expect(result).toMatch(/<context timezone="[^"]+" now="[^"]+" \/>/);
   });
 
+  it('also pins the date as a plain visible sentence (models that ignore the attribute)', () => {
+    // Regression guard: the now="..." attribute alone was ignored by some
+    // non-Claude models, dating briefings a day behind. The plain line must
+    // stay. See docs/date-pinning.md.
+    const result = formatMessages([]);
+    expect(result).toMatch(/Current date and time: .+\. Treat this as "now"\/"today"/);
+  });
+
   it('header comes before the first <message> block when multiple are present', () => {
     insertMessage('m1', 'chat', { sender: 'Alice', text: 'one' });
     insertMessage('m2', 'chat', { sender: 'Bob', text: 'two' });

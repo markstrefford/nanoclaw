@@ -130,7 +130,17 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
  * Strips routing fields — the agent never sees platform_id, channel_type, thread_id.
  */
 export function formatMessages(messages: MessageInRow[]): string {
-  const header = `<context timezone="${escapeXml(TIMEZONE)}" now="${escapeXml(formatNowLocal(TIMEZONE))}" />\n`;
+  const now = formatNowLocal(TIMEZONE);
+  // Pin the date BOTH as a machine attribute and as a plain visible sentence.
+  // The attribute alone (now="...") was delivered correctly but silently
+  // ignored by some non-Claude models (e.g. Kimi), which then dated daily
+  // briefings a day behind regardless of a correct container clock. A plain
+  // in-message line is honoured reliably across providers — see
+  // docs/date-pinning.md.
+  const header =
+    `<context timezone="${escapeXml(TIMEZONE)}" now="${escapeXml(now)}" />\n` +
+    `Current date and time: ${now} (${TIMEZONE}). ` +
+    `Treat this as "now"/"today"; never infer the date from message history or your own clock.\n`;
   if (messages.length === 0) return header;
 
   // Group by kind
