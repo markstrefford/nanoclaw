@@ -1,4 +1,4 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { TurnProgress } from './turn-progress.js';
@@ -21,6 +21,11 @@ import { getConfig } from './config.js';
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
 const STATUS_TICK_INTERVAL_MS = 1500;
+// How many consecutive *retryable* upstream errors to tolerate before treating
+// the failure as persistent: alert the user and end the turn. Keeps a genuine
+// blip (1–2 retries) silent while stopping a storm well short of the 30-min
+// container ceiling.
+const MAX_RETRYABLE_BEFORE_ALERT = 6;
 
 /**
  * Number of consecutive `database disk image is malformed` errors after which
@@ -349,6 +354,12 @@ async function processQuery(
   let queryContinuation: string | undefined;
   let done = false;
   let unwrappedNudged = false;
+  // Upstream-error handling: surface a clear alert + fail fast instead of
+  // letting a stalled/quota-blocked model call retry-storm into a 30-min
+  // silent hang (the host kills the container at the ceiling and the user
+  // sees nothing). `alerted` guards against duplicate alerts within a turn.
+  let alerted = false;
+  let retryableErrors = 0;
 
   // Live progress-status line: after a few seconds of silent work, post a
   // "⏳ Working on it…" line to the conversation, update it in place as tools
@@ -538,6 +549,30 @@ async function processQuery(
             );
           }
         }
+      } else if (event.type === 'error') {
+        // A "no budget" / quota / auth wall is non-retryable: retrying just
+        // burns minutes against a suspended account, so surface it to the
+        // user in-channel the moment we receive it and end the turn. Genuine
+        // transient errors (network blip, 5xx, provider cold-start) are
+        // retryable — let them ride, but bound the storm so a persistent one
+        // also fails fast with an alert rather than hanging to the ceiling.
+        if (!event.retryable) {
+          if (!alerted) {
+            alerted = true;
+            emitUpstreamAlert(routing, event.classification, event.message);
+          }
+          markCompleted(initialBatchIds);
+          query.end();
+          break;
+        }
+        retryableErrors++;
+        if (retryableErrors >= MAX_RETRYABLE_BEFORE_ALERT && !alerted) {
+          alerted = true;
+          emitUpstreamAlert(routing, event.classification, event.message);
+          markCompleted(initialBatchIds);
+          query.end();
+          break;
+        }
       }
     }
   } finally {
@@ -569,6 +604,44 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
       log(`Progress: ${event.message}`);
       break;
   }
+}
+
+/**
+ * Surface an upstream model-provider failure to the user in-channel, the moment
+ * we receive it — instead of letting it retry-storm into a silent 30-min hang.
+ *
+ * Routing may be null (e.g. a scheduled-task turn with no originating chat), so
+ * we fall back to the first channel destination — the owner's chat — to make
+ * sure "budget exceeded" actually reaches a human.
+ */
+function emitUpstreamAlert(routing: RoutingContext, classification: string | undefined, providerMessage: string): void {
+  try {
+    const dest =
+      findByRouting(routing.channelType, routing.platformId) ??
+      getAllDestinations().find((d) => d.type === 'channel');
+    if (!dest) {
+      log(`Upstream alert: no channel destination to notify (classification=${classification ?? 'none'})`);
+      return;
+    }
+    sendToDestination(dest, buildUpstreamAlertText(classification, providerMessage), routing);
+    log(`Upstream alert sent to "${dest.name}" (classification=${classification ?? 'none'})`);
+  } catch (err) {
+    log(`Failed to send upstream alert: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function buildUpstreamAlertText(classification: string | undefined, providerMessage: string): string {
+  if (classification === 'quota') {
+    return (
+      `⚠️ I can't reach the model — the provider rejected the request with a billing/quota error, ` +
+      `so I've stopped (retrying wouldn't help). This usually means the model account is out of balance. ` +
+      `Please top it up and I'll work again on the next message.\n\nProvider said: ${providerMessage}`
+    );
+  }
+  return (
+    `⚠️ I'm having trouble reaching the model (repeated upstream errors) and have paused this turn ` +
+    `rather than hang. I'll retry on your next message.\n\nProvider said: ${providerMessage}`
+  );
 }
 
 /**
