@@ -142,6 +142,37 @@ export function notifyAgent(session: Session, text: string): void {
   }
 }
 
+/**
+ * Send a plain chat message to the agent group's owner/admin (not to the agent).
+ * Used by the host-side hang watchdog to surface "your agent wedged" the moment
+ * it happens, instead of the user discovering silence later. Returns true if an
+ * owner DM was reached. Best-effort: never throws.
+ */
+export async function notifyOwner(session: Session, text: string): Promise<boolean> {
+  try {
+    const approvers = pickApprover(session.agent_group_id);
+    if (approvers.length === 0) return false;
+    const originChannelType = session.messaging_group_id
+      ? (getMessagingGroup(session.messaging_group_id)?.channel_type ?? '')
+      : '';
+    const target = await pickApprovalDelivery(approvers, originChannelType);
+    if (!target) return false;
+    const adapter = getDeliveryAdapter();
+    if (!adapter) return false;
+    await adapter.deliver(
+      target.messagingGroup.channel_type,
+      target.messagingGroup.platform_id,
+      null,
+      'chat',
+      JSON.stringify({ text }),
+    );
+    return true;
+  } catch (err) {
+    log.error('Failed to notify owner', { err });
+    return false;
+  }
+}
+
 export interface RequestApprovalOptions {
   session: Session;
   agentName: string;

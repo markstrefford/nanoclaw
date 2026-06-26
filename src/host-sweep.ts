@@ -45,7 +45,18 @@ import {
 import { log } from './log.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
+import { notifyOwner } from './modules/approvals/primitive.js';
 import type { Session } from './types.js';
+
+/**
+ * Hang watchdog dedup: a wedged session is killed at the ceiling roughly every
+ * 30 min and respawns into the same wedge, so without throttling the owner
+ * would get an alert every cycle. Alert at most once per this window per
+ * session. Cleared implicitly when the process restarts (a fresh start is
+ * itself a signal worth a fresh alert).
+ */
+const lastHangAlertMs = new Map<string, number>();
+const HANG_ALERT_THROTTLE_MS = 2 * 60 * 60 * 1000; // 2h
 
 /**
  * SQLite TIMESTAMP columns store UTC without a timezone marker. Date.parse
@@ -248,6 +259,20 @@ function enforceRunningContainerSla(
     });
     killContainer(session.id, 'absolute-ceiling');
     resetStuckProcessingRows(inDb, outDb, session, 'absolute-ceiling');
+    // Hang watchdog: a ceiling-kill means the agent produced no heartbeat for
+    // 30 min — a genuine wedge (a stalled tool/MCP or an upstream that emits
+    // no events for the agent-runner to fail-fast on). Surface it to the owner
+    // so silent wedges become visible, throttled to avoid per-cycle spam.
+    const last = lastHangAlertMs.get(session.id) ?? 0;
+    if (Date.now() - last > HANG_ALERT_THROTTLE_MS) {
+      lastHangAlertMs.set(session.id, Date.now());
+      const name = getAgentGroup(session.agent_group_id)?.name ?? 'An agent';
+      void notifyOwner(
+        session,
+        `⚠️ ${name} stopped responding — it hung for ~30 min with no output and I've restarted it. ` +
+          `If this repeats, a tool/MCP server or the model provider is likely stalling (check model budget/credentials).`,
+      ).catch((err) => log.error('Hang-watchdog owner alert failed', { sessionId: session.id, err }));
+    }
     return;
   }
 
