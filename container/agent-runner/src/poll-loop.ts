@@ -649,11 +649,16 @@ function buildUpstreamAlertText(classification: string | undefined, providerMess
  * and dispatch each one to its resolved destination. Text outside of blocks
  * (including <internal>...</internal>) is scratchpad — logged but not sent.
  *
- * The agent must always wrap output in <message to="name">...</message>
- * blocks, even with a single destination. Bare text is scratchpad only.
+ * The agent should wrap output in <message to="name">...</message> blocks. If a
+ * <message> block omits the to="..." attribute, we still deliver it — to the
+ * originating channel (or the primary channel) — rather than dropping it. Some
+ * models reliably emit <message> without the attribute; dropping those used to
+ * silently loop (drop -> nudge -> re-emit -> drop) and the bot looked dead.
+ * Bare text outside any <message> block is still scratchpad only.
  */
 function dispatchResultText(text: string, routing: RoutingContext): { sent: number; hasUnwrapped: boolean } {
-  const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
+  // `to="..."` is optional — captured when present, undefined when omitted.
+  const MESSAGE_RE = /<message(?:\s+to="([^"]+)")?\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
   let sent = 0;
@@ -668,11 +673,24 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
     const body = match[2].trim();
     lastIndex = MESSAGE_RE.lastIndex;
 
-    const dest = findByName(toName);
-    if (!dest) {
-      log(`Unknown destination in <message to="${toName}">, dropping block`);
-      scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
-      continue;
+    let dest: DestinationEntry | undefined;
+    if (toName) {
+      dest = findByName(toName);
+      if (!dest) {
+        log(`Unknown destination in <message to="${toName}">, dropping block`);
+        scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
+        continue;
+      }
+    } else {
+      // <message> with no to= — the agent clearly meant to send. Route to the
+      // channel this turn came from, else the first channel destination.
+      dest = findByRouting(routing.channelType, routing.platformId) ?? getAllDestinations().find((d) => d.type === 'channel');
+      if (!dest) {
+        log('<message> had no to= attribute and no channel destination to route to — dropping block');
+        scratchpadParts.push(`[dropped: no destination] ${body}`);
+        continue;
+      }
+      log(`<message> had no to= attribute — routing to "${dest.name}" (origin/primary channel)`);
     }
     sendToDestination(dest, body, routing);
     sent++;
