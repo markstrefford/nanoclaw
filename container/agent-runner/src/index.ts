@@ -26,6 +26,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { loadConfig } from './config.js';
+import { healthGateMcpServers } from './mcp-health.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
+  let instructions = buildSystemPromptAddendum(config.assistantName || undefined);
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
@@ -86,9 +87,26 @@ async function main(): Promise<void> {
     log(`Additional MCP server: ${name} (${serverConfig.command})`);
   }
 
+  // Startup health-gate: probe each MCP server (initialize + tools/list, bounded)
+  // before handing it to the SDK. A server that hangs on startup would otherwise
+  // wedge the entire agent silently until the 30-min ceiling. Drop the unhealthy
+  // ones, keep the rest, and tell the agent which are down so it can say so
+  // instead of going quiet. The in-process `nanoclaw` server is trusted.
+  const gate = await healthGateMcpServers(mcpServers, { skip: ['nanoclaw'], log });
+  if (gate.dropped.length > 0) {
+    const lines = gate.dropped.map((d) => `- ${d.name}: ${d.reason}`).join('\n');
+    log(`Dropped ${gate.dropped.length} unhealthy MCP server(s) so the agent stays responsive:\n${lines}`);
+    instructions +=
+      `\n\n# Tools unavailable this session\n` +
+      `These tool servers failed to start and are NOT available right now:\n${lines}\n` +
+      `If the user asks for something that needs one of them, tell them that tool is currently down ` +
+      `(it will be retried automatically next time) — do not pretend to use it or stall.`;
+  }
+  const healthyMcpServers = { nanoclaw: mcpServers.nanoclaw, ...gate.healthy };
+
   const provider = createProvider(providerName, {
     assistantName: config.assistantName || undefined,
-    mcpServers,
+    mcpServers: healthyMcpServers,
     env: { ...process.env },
     additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     model: config.model,
