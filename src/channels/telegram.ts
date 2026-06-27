@@ -38,6 +38,73 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 5
   throw lastErr;
 }
 
+/**
+ * Health signal for the polling loop, populated by an instrumented logger that
+ * watches the adapter's own "polling request failed" warnings. The adapter's
+ * polling loop runs `while (pollingActive)` and never exits on network errors —
+ * it logs, backs off (capped at 30s), and retries forever. So a wedged poller
+ * looks identical to a healthy one from the outside (`isPolling === true`); the
+ * only observable difference is its failure stream. We track the most recent
+ * failure and the adapter's own `consecutiveFailures` count to tell "currently
+ * failing" from "healthy and idle".
+ */
+interface PollHealth {
+  /** ms epoch of the most recent "polling request failed" log (0 = none seen). */
+  lastFailureAt: number;
+  /** consecutiveFailures value from that log (the adapter resets it to 0 on any success). */
+  lastFailureCount: number;
+}
+
+/** Structural mirror of chat-sdk's Logger — avoids importing the transitive `chat` package. */
+interface PollLogger {
+  child(prefix: string): PollLogger;
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
+/**
+ * A logger that preserves the adapter's existing console diagnostics while
+ * tapping the polling-failure stream to populate `health`. Child loggers share
+ * the same health closure so the signal is captured no matter how the adapter
+ * routes the log.
+ */
+function makePollLogger(prefix: string, health: PollHealth): PollLogger {
+  const emit = (level: 'debug' | 'info' | 'warn' | 'error', message: string, args: unknown[]): void => {
+    if (level === 'warn' && message === 'Telegram polling request failed') {
+      const payload = args[0] as { consecutiveFailures?: number } | undefined;
+      health.lastFailureAt = Date.now();
+      health.lastFailureCount =
+        typeof payload?.consecutiveFailures === 'number' ? payload.consecutiveFailures : health.lastFailureCount + 1;
+    }
+    (console[level] ?? console.log)(`[${prefix}] ${message}`, ...args);
+  };
+  return {
+    child: (sub: string) => makePollLogger(`${prefix}:${sub}`, health),
+    debug: (m, ...a) => emit('debug', m, a),
+    info: (m, ...a) => emit('info', m, a),
+    warn: (m, ...a) => emit('warn', m, a),
+    error: (m, ...a) => emit('error', m, a),
+  };
+}
+
+/**
+ * Independent reachability probe. A successful HTTP response (any status — even
+ * 401) means we reached Telegram and the underlying socket pool is healthy; a
+ * thrown fetch means the network itself is down. Shares Node's undici pool with
+ * the poll loop, so a healthy probe implies a fresh `startPolling()` will also
+ * get a working socket.
+ */
+async function telegramReachable(token: string): Promise<boolean> {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(8000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractReplyContext(raw: Record<string, any>): ReplyContext | null {
   if (!raw.reply_to_message) return null;
@@ -202,9 +269,11 @@ function registerTelegramBot(channelType: string, envVar: string): void {
       const env = readEnvFile([envVar]);
       if (!env[envVar]) return null;
       const token = env[envVar];
+      const health: PollHealth = { lastFailureAt: 0, lastFailureCount: 0 };
       const telegramAdapter = createTelegramAdapter({
         botToken: token,
         mode: 'polling',
+        logger: makePollLogger(`chat-sdk:${channelType}`, health),
       });
       const bridge = createChatSdkBridge({
         adapter: telegramAdapter,
@@ -217,16 +286,56 @@ function registerTelegramBot(channelType: string, envVar: string): void {
 
       const botUsernamePromise = fetchBotUsername(token);
 
-      // Poll watchdog. The @chat-adapter/telegram polling loop exits
-      // permanently if a transient network error trips its abort path, leaving
-      // the bot silent until the host restarts — observed as multi-minute (and
-      // longer) dead windows where Telegram holds undelivered updates. The
-      // adapter's own backoff caps at 30s, so a long silence means the loop has
-      // *exited*, not merely backed off. startPolling() is idempotent (a no-op
-      // while already active), so re-arming it on an interval revives a dead
-      // poller within ~60s and flushes the held backlog. Cheap insurance that
-      // survives package updates since it lives entirely on our side.
+      // Poll watchdog. Two distinct failure modes, both leaving the bot silent
+      // until the host is restarted by hand:
+      //
+      //   1. Loop exited — `isPolling === false`. startPolling() (idempotent,
+      //      a no-op while active) revives it.
+      //   2. Loop alive but wedged — `isPolling === true`, yet getUpdates keeps
+      //      failing even after connectivity returns (observed after a long
+      //      laptop-offline window: the poll loop retried for 15+ min past the
+      //      network coming back). Here startPolling() does NOTHING because the
+      //      loop is still "active", so the original re-arm-only watchdog could
+      //      not recover it. The fix is a hard cycle — stopPolling() then
+      //      startPolling() — to tear down the stale loop and build a fresh one.
+      //
+      // We only hard-cycle when the poller is *currently failing* (recent
+      // failures, per the instrumented logger) AND Telegram is independently
+      // reachable — otherwise we'd churn a healthy idle poller or thrash during
+      // a real outage we can't fix anyway. Lives entirely on our side, so it
+      // survives @chat-adapter/telegram updates.
+      const WATCHDOG_INTERVAL_MS = 30_000;
+      const WEDGE_RECENT_MS = 90_000; // backoff caps at 30s, so a failing loop logs at least this often
+      const WEDGE_FAILURE_THRESHOLD = 3; // ignore one-off blips; require sustained failure
       let pollWatchdog: ReturnType<typeof setInterval> | null = null;
+
+      const runWatchdogTick = async (): Promise<void> => {
+        try {
+          if (!telegramAdapter.isPolling) {
+            log.warn('Telegram poller not active — restarting', { channelType });
+            await telegramAdapter.startPolling();
+            return;
+          }
+          const sinceFailureMs = Date.now() - health.lastFailureAt;
+          const wedged =
+            health.lastFailureAt > 0 &&
+            sinceFailureMs < WEDGE_RECENT_MS &&
+            health.lastFailureCount >= WEDGE_FAILURE_THRESHOLD;
+          if (!wedged) return;
+          if (!(await telegramReachable(token))) return; // real outage — nothing to fix
+          log.warn('Telegram poller wedged while reachable — hard cycling', {
+            channelType,
+            consecutiveFailures: health.lastFailureCount,
+            sinceFailureMs,
+          });
+          await telegramAdapter.stopPolling();
+          await telegramAdapter.startPolling();
+          health.lastFailureAt = 0;
+          health.lastFailureCount = 0;
+        } catch (err) {
+          log.warn('Telegram poll watchdog tick failed', { channelType, err });
+        }
+      };
 
       const wrapped: ChannelAdapter = {
         ...bridge,
@@ -254,10 +363,8 @@ function registerTelegramBot(channelType: string, envVar: string): void {
           await withRetry(() => bridge.setup(intercepted), 'bridge.setup');
           if (!pollWatchdog) {
             pollWatchdog = setInterval(() => {
-              telegramAdapter.startPolling().catch((err: unknown) => {
-                log.warn('Telegram poll watchdog re-arm failed', { channelType, err });
-              });
-            }, 60_000);
+              void runWatchdogTick();
+            }, WATCHDOG_INTERVAL_MS);
             pollWatchdog.unref?.();
           }
         },
