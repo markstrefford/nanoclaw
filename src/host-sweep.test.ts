@@ -46,6 +46,21 @@ describe('decideStuckAction', () => {
     if (res.action !== 'kill-ceiling') return;
     expect(res.ceilingMs).toBe(ABSOLUTE_CEILING_MS);
     expect(res.heartbeatAgeMs).toBeGreaterThan(ABSOLUTE_CEILING_MS);
+    // No claim outstanding — the container simply ran out of work, so this is
+    // a routine idle shutdown and must not raise the hang alert.
+    expect(res.idle).toBe(true);
+  });
+
+  it('marks a ceiling kill non-idle when a claim is still outstanding', () => {
+    const res = decideStuckAction({
+      now: BASE,
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 1_000,
+      containerState: null,
+      claims: [{ message_id: 'm-1', status_changed: new Date(BASE - 5_000).toISOString() }],
+    });
+    expect(res.action).toBe('kill-ceiling');
+    if (res.action !== 'kill-ceiling') return;
+    expect(res.idle).toBe(false);
   });
 
   it('skips the ceiling check when no heartbeat file exists (fresh container not yet ticked)', () => {

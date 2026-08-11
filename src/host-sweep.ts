@@ -82,7 +82,10 @@ const BACKOFF_BASE_MS = 5000;
 
 export type StuckDecision =
   | { action: 'ok' }
-  | { action: 'kill-ceiling'; heartbeatAgeMs: number; ceilingMs: number }
+  // `idle` distinguishes the ceiling's two jobs (see ABSOLUTE_CEILING_MS): a
+  // container holding no claim simply ran out of work, which is a routine
+  // shutdown; one still holding a claim went quiet mid-message, which is a hang.
+  | { action: 'kill-ceiling'; heartbeatAgeMs: number; ceilingMs: number; idle: boolean }
   | { action: 'kill-claim'; messageId: string; claimAgeMs: number; toleranceMs: number };
 
 /**
@@ -111,7 +114,12 @@ export function decideStuckAction(args: {
     const heartbeatAge = now - heartbeatMtimeMs;
     const ceiling = Math.max(ABSOLUTE_CEILING_MS, declaredBashMs ?? 0);
     if (heartbeatAge > ceiling) {
-      return { action: 'kill-ceiling', heartbeatAgeMs: heartbeatAge, ceilingMs: ceiling };
+      return {
+        action: 'kill-ceiling',
+        heartbeatAgeMs: heartbeatAge,
+        ceilingMs: ceiling,
+        idle: claims.length === 0,
+      };
     }
   }
 
@@ -256,15 +264,18 @@ function enforceRunningContainerSla(
       sessionId: session.id,
       heartbeatAgeMs: decision.heartbeatAgeMs,
       ceilingMs: decision.ceilingMs,
+      idle: decision.idle,
     });
     killContainer(session.id, 'absolute-ceiling');
     resetStuckProcessingRows(inDb, outDb, session, 'absolute-ceiling');
-    // Hang watchdog: a ceiling-kill means the agent produced no heartbeat for
-    // 30 min — a genuine wedge (a stalled tool/MCP or an upstream that emits
-    // no events for the agent-runner to fail-fast on). Surface it to the owner
-    // so silent wedges become visible, throttled to avoid per-cycle spam.
+    // Hang watchdog: only a container that went quiet while still holding a
+    // claim is wedged (a stalled tool/MCP, or an upstream emitting no events
+    // for the agent-runner to fail-fast on). One holding no claim just ran out
+    // of work — the heartbeat is only touched while the SDK streams events, so
+    // every healthy idle container trips the ceiling ~30 min after its last
+    // turn. Alerting on those buried the real signal in daily noise.
     const last = lastHangAlertMs.get(session.id) ?? 0;
-    if (Date.now() - last > HANG_ALERT_THROTTLE_MS) {
+    if (!decision.idle && Date.now() - last > HANG_ALERT_THROTTLE_MS) {
       lastHangAlertMs.set(session.id, Date.now());
       const name = getAgentGroup(session.agent_group_id)?.name ?? 'An agent';
       void notifyOwner(
