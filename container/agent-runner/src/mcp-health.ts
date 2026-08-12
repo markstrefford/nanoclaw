@@ -17,6 +17,13 @@
  * The probe spawns a throwaway instance and kills it; the SDK spawns its own.
  * stdio MCP servers are independent processes, so a probe-then-real double spawn
  * is harmless.
+ *
+ * The probe also times the handshake. A server that is healthy but slow to
+ * answer (caldav-mcp logs into iCloud before it connects its stdio transport,
+ * ~3s) is still "pending" when the SDK snapshots the tool list for the turn, so
+ * none of its tools exist unless the agent waits. The gate reports these as
+ * `slow` so the runner can tell the agent to wait rather than conclude the tool
+ * is missing.
  */
 import { spawn } from 'node:child_process';
 
@@ -24,14 +31,25 @@ export interface McpServerSpec {
   command: string;
   args: string[];
   env: Record<string, string>;
+  /** See `McpServerConfig.alwaysLoad` — set downstream for slow servers. */
+  alwaysLoad?: boolean;
 }
 
 export interface HealthGateResult {
   healthy: Record<string, McpServerSpec>;
   dropped: Array<{ name: string; reason: string }>;
+  /** Healthy, but too slow to be registered before the SDK's first turn. */
+  slow: Array<{ name: string; handshakeMs: number }>;
 }
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.MCP_HEALTH_TIMEOUT_MS) || 20_000;
+
+/**
+ * Handshake budget beyond which the SDK will still be showing the server as
+ * `pending` when it fixes the tool list for the turn. Measured: servers that
+ * answer inside ~1s register in time; caldav-mcp at ~3s never does.
+ */
+const SLOW_HANDSHAKE_MS = Number(process.env.MCP_SLOW_HANDSHAKE_MS) || 1_000;
 
 const INIT_REQUEST =
   JSON.stringify({
@@ -53,8 +71,9 @@ const TOOLS_LIST_REQUEST = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tool
  * the timeout. Resolves {ok:false, reason} on hang/crash/spawn-failure — never
  * rejects.
  */
-function probe(spec: McpServerSpec, timeoutMs: number): Promise<{ ok: boolean; reason: string }> {
+function probe(spec: McpServerSpec, timeoutMs: number): Promise<{ ok: boolean; reason: string; handshakeMs: number }> {
   return new Promise((resolve) => {
+    const started = Date.now();
     let settled = false;
     let initialized = false;
     let buf = '';
@@ -66,7 +85,11 @@ function probe(spec: McpServerSpec, timeoutMs: number): Promise<{ ok: boolean; r
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
-      resolve({ ok: false, reason: `spawn failed: ${err instanceof Error ? err.message : String(err)}` });
+      resolve({
+        ok: false,
+        reason: `spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+        handshakeMs: Date.now() - started,
+      });
       return;
     }
 
@@ -79,7 +102,7 @@ function probe(spec: McpServerSpec, timeoutMs: number): Promise<{ ok: boolean; r
       } catch {
         /* already gone */
       }
-      resolve({ ok, reason });
+      resolve({ ok, reason, handshakeMs: Date.now() - started });
     };
 
     const timer = setTimeout(
@@ -147,10 +170,11 @@ export async function healthGateMcpServers(
 
   const healthy: Record<string, McpServerSpec> = {};
   const dropped: Array<{ name: string; reason: string }> = [];
+  const slow: Array<{ name: string; handshakeMs: number }> = [];
 
   const results = await Promise.all(
     Object.entries(servers).map(async ([name, spec]) => {
-      if (skip.has(name)) return { name, ok: true, reason: 'trusted' };
+      if (skip.has(name)) return { name, ok: true, reason: 'trusted', handshakeMs: 0 };
       const r = await probe(spec, timeoutMs);
       return { name, ...r };
     }),
@@ -160,11 +184,15 @@ export async function healthGateMcpServers(
     if (r.ok) {
       healthy[r.name] = servers[r.name];
       if (r.reason !== 'ok' && r.reason !== 'trusted') log(`MCP server "${r.name}" healthy (${r.reason})`);
+      if (r.reason !== 'trusted' && r.handshakeMs >= SLOW_HANDSHAKE_MS) {
+        slow.push({ name: r.name, handshakeMs: r.handshakeMs });
+        log(`MCP server "${r.name}" healthy but SLOW (${r.handshakeMs}ms) — will still be pending on the first turn`);
+      }
     } else {
       dropped.push({ name: r.name, reason: r.reason });
       log(`MCP server "${r.name}" DROPPED at startup — ${r.reason}`);
     }
   }
 
-  return { healthy, dropped };
+  return { healthy, dropped, slow };
 }

@@ -14,6 +14,12 @@ const HALF = `
 let buf='';process.stdin.on('data',d=>{buf+=d;let i;while((i=buf.indexOf('\\n'))>=0){const l=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!l)continue;const m=JSON.parse(l);if(m.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}})+'\\n');}});
 setInterval(()=>{},1000);
 `;
+// Healthy, but only answers after a delay — caldav-mcp's shape (it logs into
+// iCloud before connecting its transport), which the SDK sees as still pending.
+const SLOW = `
+setTimeout(()=>{${HEALTHY}},1200);
+setInterval(()=>{},1000);
+`;
 const HANG = `setInterval(()=>{},1000);`; // never responds
 const CRASH = `process.exit(1);`;
 
@@ -51,6 +57,18 @@ describe('healthGateMcpServers', () => {
     );
     expect(Object.keys(r.healthy)).toEqual(['good']);
     expect(r.dropped.map((d) => d.name)).toEqual(['stuck']);
+  });
+
+  it('flags a healthy but slow server without dropping it', async () => {
+    const r = await healthGateMcpServers({ lazy: spec(SLOW) }, { timeoutMs: 5000 });
+    expect(Object.keys(r.healthy)).toEqual(['lazy']);
+    expect(r.dropped).toEqual([]);
+    expect(r.slow.map((s) => s.name)).toEqual(['lazy']);
+  });
+
+  it('does not flag a server that answers promptly', async () => {
+    const r = await healthGateMcpServers({ good: spec(HEALTHY) }, { timeoutMs: 2000 });
+    expect(r.slow).toEqual([]);
   });
 
   it('passes trusted (skip) servers through without probing', async () => {

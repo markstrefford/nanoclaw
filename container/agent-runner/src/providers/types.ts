@@ -78,6 +78,13 @@ export interface McpServerConfig {
   command: string;
   args: string[];
   env: Record<string, string>;
+  /**
+   * Block turn-1 startup until this server has connected (SDK caps the wait at
+   * 5s). MCP startup is otherwise non-blocking, so a server slower than the
+   * SDK's snapshot is absent from the tool list for the whole turn. Set by the
+   * health gate for servers it measured as slow.
+   */
+  alwaysLoad?: boolean;
 }
 
 export interface AgentQuery {

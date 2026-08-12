@@ -102,7 +102,26 @@ async function main(): Promise<void> {
       `If the user asks for something that needs one of them, tell them that tool is currently down ` +
       `(it will be retried automatically next time) — do not pretend to use it or stall.`;
   }
-  const healthyMcpServers = { nanoclaw: mcpServers.nanoclaw, ...gate.healthy };
+  // MCP startup is non-blocking by default: the SDK builds the turn-1 tool list
+  // from whichever servers have connected by then, and a slower one is simply
+  // absent for the whole turn — the agent sees no error, just a missing tool,
+  // and reports the integration as broken. (caldav-mcp logs into iCloud before
+  // it connects its stdio transport, so it loses this race every time.)
+  // `alwaysLoad` makes the SDK block on those servers instead, capped at 5s.
+  const healthyMcpServers: typeof gate.healthy = { nanoclaw: mcpServers.nanoclaw, ...gate.healthy };
+  if (gate.slow.length > 0) {
+    const names = gate.slow.map((s) => `${s.name} (${s.handshakeMs}ms)`).join(', ');
+    log(`Blocking startup on slow MCP server(s) so their tools exist on turn 1: ${names}`);
+    for (const { name } of gate.slow) {
+      healthyMcpServers[name] = { ...healthyMcpServers[name], alwaysLoad: true };
+    }
+    // Belt and braces: anything past the SDK's 5s cap still misses turn 1.
+    instructions +=
+      `\n\n# Tool servers that start slowly\n` +
+      `These are healthy but take a few seconds to connect: ${gate.slow.map((s) => s.name).join(', ')}.\n` +
+      `If you need one of their tools and cannot find it in your tool list, call WaitForMcpServers and retry. ` +
+      `Never report one of these as missing, offline, or broken without having waited.`;
+  }
 
   const provider = createProvider(providerName, {
     assistantName: config.assistantName || undefined,

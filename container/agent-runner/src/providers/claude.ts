@@ -60,6 +60,9 @@ const TOOL_ALLOWLIST = [
   'ToolSearch',
   'Skill',
   'NotebookEdit',
+  // Blocks until MCP servers that were still connecting at turn start finish.
+  // Slow servers (see the health gate) are otherwise unreachable for the turn.
+  'WaitForMcpServers',
 ];
 
 // MCP server names are sanitized by the SDK when forming tool prefixes:
