@@ -14,12 +14,19 @@
  * tick), DMs an owner on the down and up transitions, and runs orphan cleanup
  * on recovery. Queued messages drain on their own once spawning works again.
  */
-import { cleanupOrphans, isContainerRuntimeUp } from './container-runtime.js';
+import { cleanupOrphans, isContainerRuntimeUp, startContainerRuntime } from './container-runtime.js';
 import { log } from './log.js';
 import { notifyOwnerGlobal } from './modules/approvals/primitive.js';
 
 /** Re-alert cadence while the runtime stays down, so a long outage isn't one scrolled-past message. */
 const REALERT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * How often to re-attempt starting the runtime while it's down. Long enough
+ * that Docker Desktop's own startup (tens of seconds) finishes without us
+ * launching it again, short enough to keep trying through a bad boot.
+ */
+const START_RETRY_INTERVAL_MS = 10 * 60 * 1000;
 
 export type RuntimeTransition = 'unchanged' | 'went-down' | 'came-up' | 'still-down';
 
@@ -28,9 +35,10 @@ interface WatchState {
   lastUp: boolean | null;
   downSinceMs: number;
   lastAlertMs: number;
+  lastStartAttemptMs: number;
 }
 
-const state: WatchState = { lastUp: null, downSinceMs: 0, lastAlertMs: 0 };
+const state: WatchState = { lastUp: null, downSinceMs: 0, lastAlertMs: 0, lastStartAttemptMs: 0 };
 
 /**
  * Classify a probe result against the previous one. Pure — the alerting and
@@ -59,6 +67,20 @@ export function formatDuration(ms: number): string {
   return `${(hours / 24).toFixed(1)} days`;
 }
 
+/**
+ * Attempt to start the runtime, no more than once per retry interval.
+ * Returns true if a launch was actually attempted on this call.
+ */
+function maybeStartRuntime(nowMs: number): boolean {
+  if (state.lastStartAttemptMs && nowMs - state.lastStartAttemptMs < START_RETRY_INTERVAL_MS) {
+    return false;
+  }
+  state.lastStartAttemptMs = nowMs;
+  const launched = startContainerRuntime();
+  log.info('Attempted to start container runtime', { launched });
+  return launched;
+}
+
 /** True when the last probe found no container runtime. */
 export function isRuntimeDown(): boolean {
   return state.lastUp === false;
@@ -73,20 +95,28 @@ export async function checkContainerRuntime(): Promise<boolean> {
   const nowMs = Date.now();
   const transition = decideRuntimeTransition(state.lastUp, up, nowMs, state.lastAlertMs);
 
+  // Try to fix it before reporting it. The usual cause is a reboot where
+  // Docker Desktop didn't come back, which the host can resolve on its own.
+  const launched = up ? false : maybeStartRuntime(nowMs);
+
   if (transition === 'went-down') {
     state.downSinceMs = nowMs;
     state.lastAlertMs = nowMs;
-    log.error('Container runtime is down — agents cannot run, messages will queue');
+    log.error('Container runtime is down — agents cannot run, messages will queue', { launched });
     void notifyOwnerGlobal(
       `🔌 Docker isn't running, so no agent can start. I'm still receiving your messages — ` +
-        `they'll queue and run as soon as it's back. Start Docker and I'll pick up within a minute; ` +
-        `no restart needed.`,
+        `they'll queue and run as soon as it's back. ` +
+        (launched
+          ? `I've asked Docker to start; if it works you'll hear from me within a minute or two.`
+          : `I couldn't start it from here — it needs a hand.`),
     );
   } else if (transition === 'still-down') {
     state.lastAlertMs = nowMs;
     const downFor = formatDuration(nowMs - state.downSinceMs);
-    log.error('Container runtime still down', { downFor });
-    void notifyOwnerGlobal(`🔌 Docker has now been down for ${downFor}. Messages are still queuing.`);
+    log.error('Container runtime still down', { downFor, launched });
+    void notifyOwnerGlobal(
+      `🔌 Docker has now been down for ${downFor} and hasn't come back on its own. Messages are still queuing.`,
+    );
   } else if (transition === 'came-up') {
     const downFor = formatDuration(nowMs - state.downSinceMs);
     log.info('Container runtime recovered', { downFor });
@@ -102,4 +132,5 @@ export function _resetRuntimeWatchForTesting(): void {
   state.lastUp = null;
   state.downSinceMs = 0;
   state.lastAlertMs = 0;
+  state.lastStartAttemptMs = 0;
 }

@@ -12,9 +12,11 @@ vi.mock('./log.js', () => ({
 
 const mockIsUp = vi.fn();
 const mockCleanupOrphans = vi.fn();
+const mockStart = vi.fn(() => true);
 vi.mock('./container-runtime.js', () => ({
   isContainerRuntimeUp: () => mockIsUp(),
   cleanupOrphans: () => mockCleanupOrphans(),
+  startContainerRuntime: () => mockStart(),
 }));
 
 const mockNotify = vi.fn(async (_text: string) => true);
@@ -35,6 +37,7 @@ const BASE = Date.parse('2026-08-17T08:45:00.000Z');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockStart.mockReturnValue(true);
   _resetRuntimeWatchForTesting();
   vi.useFakeTimers();
   vi.setSystemTime(BASE);
@@ -125,5 +128,48 @@ describe('checkContainerRuntime', () => {
 
     expect(mockNotify).not.toHaveBeenCalled();
     expect(mockCleanupOrphans).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+});
+
+describe('auto-start', () => {
+  it('tries to start the runtime on the way down and says so', async () => {
+    mockIsUp.mockReturnValue(false);
+
+    await checkContainerRuntime();
+
+    expect(mockStart).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][0]).toContain("I've asked Docker to start");
+  });
+
+  it('does not relaunch on every 60s tick while Docker is booting', async () => {
+    mockIsUp.mockReturnValue(false);
+    await checkContainerRuntime();
+
+    for (let i = 1; i <= 5; i++) {
+      vi.setSystemTime(BASE + i * 60_000);
+      await checkContainerRuntime();
+    }
+
+    expect(mockStart).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries the launch once the retry interval has passed', async () => {
+    mockIsUp.mockReturnValue(false);
+    await checkContainerRuntime();
+
+    vi.setSystemTime(BASE + 10 * 60_000);
+    await checkContainerRuntime();
+
+    expect(mockStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('tells the owner it needs a hand when the launch is not possible', async () => {
+    mockIsUp.mockReturnValue(false);
+    mockStart.mockReturnValue(false);
+
+    await checkContainerRuntime();
+
+    expect(mockNotify.mock.calls[0][0]).toContain('needs a hand');
   });
 });

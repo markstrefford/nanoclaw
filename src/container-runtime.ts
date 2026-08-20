@@ -57,6 +57,36 @@ export function isContainerRuntimeUp(): boolean {
 }
 
 /**
+ * Ask the OS to start the container runtime. Fire-and-forget: returns true if
+ * the launch command was accepted, which is not the same as the daemon being
+ * ready — Docker Desktop takes tens of seconds. The caller re-probes on its
+ * normal cadence rather than waiting.
+ *
+ * Exists because the common outage is a reboot where Docker Desktop simply
+ * didn't come back, and the host is better placed to notice that than a human
+ * is. Returns false on platforms with no known launch command.
+ */
+export function startContainerRuntime(): boolean {
+  const platform = os.platform();
+  try {
+    if (platform === 'darwin') {
+      execSync('open -ga Docker', { stdio: 'pipe', timeout: 10000 });
+      return true;
+    }
+    if (platform === 'linux') {
+      // User-scoped Docker Desktop. A system dockerd is root-owned and out of
+      // our reach without sudo, so failure here is expected and non-fatal.
+      execSync('systemctl --user start docker-desktop', { stdio: 'pipe', timeout: 10000 });
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.warn('Could not start container runtime', { platform, err });
+    return false;
+  }
+}
+
+/**
  * Kill orphaned NanoClaw containers from THIS install's previous runs.
  *
  * Scoped by label `nanoclaw-install=<slug>` so a crash-looping peer install
