@@ -21,7 +21,7 @@ import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
   stopContainer,
-  ensureContainerRuntimeRunning,
+  isContainerRuntimeUp,
   cleanupOrphans,
 } from './container-runtime.js';
 import { CONTAINER_INSTALL_LABEL } from './config.js';
@@ -56,29 +56,28 @@ describe('stopContainer', () => {
   });
 });
 
-// --- ensureContainerRuntimeRunning ---
+// --- isContainerRuntimeUp ---
 
-describe('ensureContainerRuntimeRunning', () => {
-  it('does nothing when runtime is already running', () => {
+describe('isContainerRuntimeUp', () => {
+  it('returns true when the runtime answers', () => {
     mockExecSync.mockReturnValueOnce('');
 
-    ensureContainerRuntimeRunning();
+    expect(isContainerRuntimeUp()).toBe(true);
 
     expect(mockExecSync).toHaveBeenCalledTimes(1);
     expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
       timeout: 10000,
     });
-    expect(log.debug).toHaveBeenCalledWith('Container runtime already running');
   });
 
-  it('throws when docker info fails', () => {
+  it('returns false instead of throwing when docker info fails', () => {
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('Cannot connect to the Docker daemon');
     });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow('Container runtime is required but failed to start');
-    expect(log.error).toHaveBeenCalled();
+    expect(isContainerRuntimeUp()).toBe(false);
+    expect(log.debug).toHaveBeenCalled();
   });
 });
 

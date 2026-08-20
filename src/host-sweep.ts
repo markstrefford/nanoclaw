@@ -45,6 +45,7 @@ import {
 import { log } from './log.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
+import { checkContainerRuntime } from './runtime-watch.js';
 import { notifyOwner } from './modules/approvals/primitive.js';
 import type { Session } from './types.js';
 
@@ -152,9 +153,22 @@ async function sweep(): Promise<void> {
   if (!running) return;
 
   try {
-    const sessions = getActiveSessions();
-    for (const session of sessions) {
-      await sweepSession(session);
+    // Container-runtime state first: it decides whether the per-session work
+    // below can do anything at all, and owns the down/up owner alerts.
+    //
+    // Skipping the per-session pass while the runtime is down is load-bearing,
+    // not just an optimisation. Every container probe would fail, so the stuck
+    // detector would read "not running with processing rows left over" and
+    // retry-with-backoff each tick — burning `tries` until MAX_TRIES marked the
+    // queued messages failed. An outage would eat the queue it's supposed to
+    // hold. Nothing here needs doing until containers can spawn again.
+    const runtimeUp = await checkContainerRuntime();
+
+    if (runtimeUp) {
+      const sessions = getActiveSessions();
+      for (const session of sessions) {
+        await sweepSession(session);
+      }
     }
   } catch (err) {
     log.error('Host sweep error', { err });

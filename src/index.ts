@@ -12,7 +12,8 @@ import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
+import { isContainerRuntimeUp, cleanupOrphans } from './container-runtime.js';
+import { checkContainerRuntime } from './runtime-watch.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { startCostReportSchedule } from './cost-report.js';
@@ -83,9 +84,14 @@ async function main(): Promise<void> {
   // 1c. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
 
-  // 2. Container runtime
-  ensureContainerRuntimeRunning();
-  cleanupOrphans();
+  // 2. Container runtime — probed, never fatal. Orphans from a previous run
+  // are reaped before adapters start accepting messages, so a survivor can't
+  // claim work meant for a fresh container. If the runtime is down we carry on
+  // and let the watch (step 6c) report it: the alert needs the channel
+  // adapters, which are two steps below this one.
+  if (isContainerRuntimeUp()) {
+    cleanupOrphans();
+  }
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
@@ -177,6 +183,11 @@ async function main(): Promise<void> {
 
   // 6b. Start the daily token/cost report (no-op unless COST_REPORT_TARGET set).
   startCostReportSchedule();
+
+  // 6c. First container-runtime probe. Runs here rather than at step 2 because
+  // reporting a missing runtime needs the delivery adapter and the channel
+  // adapters. The sweep re-probes every 60s from now on.
+  await checkContainerRuntime();
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();

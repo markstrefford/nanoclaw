@@ -33,27 +33,26 @@ export function stopContainer(name: string): void {
   execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
 }
 
-/** Ensure the container runtime is running, starting it if needed. */
-export function ensureContainerRuntimeRunning(): void {
+/**
+ * Probe the container runtime. Returns true if it answers, false otherwise.
+ *
+ * Deliberately non-fatal. A missing daemon is an environment condition, not a
+ * broken install: the host runs fine without one — channel adapters connect,
+ * inbound messages queue in the session DBs, and containers spawn once the
+ * runtime returns. Killing the process here used to take the channel adapters
+ * down with it, which removed the only route by which the host could report
+ * the problem. See runtime-watch.ts for the degraded-mode handling.
+ */
+export function isContainerRuntimeUp(): boolean {
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
       timeout: 10000,
     });
-    log.debug('Container runtime already running');
+    return true;
   } catch (err) {
-    log.error('Failed to reach container runtime', { err });
-    console.error('\n╔════════════════════════════════════════════════════════════════╗');
-    console.error('║  FATAL: Container runtime failed to start                      ║');
-    console.error('║                                                                ║');
-    console.error('║  Agents cannot run without a container runtime. To fix:        ║');
-    console.error('║  1. Ensure Docker is installed and running                     ║');
-    console.error('║  2. Run: docker info                                           ║');
-    console.error('║  3. Restart NanoClaw                                           ║');
-    console.error('╚════════════════════════════════════════════════════════════════╝\n');
-    throw new Error('Container runtime is required but failed to start', {
-      cause: err,
-    });
+    log.debug('Container runtime probe failed', { err });
+    return false;
   }
 }
 

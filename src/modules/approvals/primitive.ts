@@ -173,6 +173,35 @@ export async function notifyOwner(session: Session, text: string): Promise<boole
   }
 }
 
+/**
+ * Send a plain chat message to a global admin or owner, with no session in
+ * hand. Used for host-level conditions that aren't attributable to one agent
+ * group — the container runtime being down, for instance, which affects every
+ * session at once and can be true before any session exists. Best-effort:
+ * never throws.
+ */
+export async function notifyOwnerGlobal(text: string): Promise<boolean> {
+  try {
+    const approvers = pickApprover(null);
+    if (approvers.length === 0) return false;
+    const target = await pickApprovalDelivery(approvers, '');
+    if (!target) return false;
+    const adapter = getDeliveryAdapter();
+    if (!adapter) return false;
+    await adapter.deliver(
+      target.messagingGroup.channel_type,
+      target.messagingGroup.platform_id,
+      null,
+      'chat',
+      JSON.stringify({ text }),
+    );
+    return true;
+  } catch (err) {
+    log.error('Failed to notify owner (global)', { err });
+    return false;
+  }
+}
+
 export interface RequestApprovalOptions {
   session: Session;
   agentName: string;
